@@ -764,3 +764,4 @@ private Integer dispensedCount;
 ```
 
 и getter/setter. Без этих полей код не скомпилируется, потому что исправление должно брать валовые движения из `Nominal.getCashInCount()` и `Nominal.getDispensedCount()`.
+2026-07-02 12:49:48:919 ERROR [scheduling-1] g.a.e.e.m.AtmEtlEncashRkoDtoBuilder: Building rkoDTO error for encashmentId=574: Cannot invoke "java.lang.Integer.intValue()" because the return value of "gpb.atm.etl.encash.dto.rkodto.SummaryCassette.getCashoutSum()" is null
