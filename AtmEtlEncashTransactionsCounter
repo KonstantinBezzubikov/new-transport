@@ -1,0 +1,766 @@
+Да, данных достаточно, чтобы исправить именно эту ошибку.
+
+Ключевое исправление: **нельзя для `currencyExchange` и смешанных движений возвращать только одну дельту `after - before`**. По одному номиналу может быть одновременно:
+
+```text
+Inserted  = 2  → принято 2 купюры
+Presented = 3  → выдано 3 купюры
+```
+
+Поэтому вместо одного `AtmEtlEncashCasseteNominalCounter` нужно вернуть **список движений**:
+
+```text
++2  // принято
+-3  // выдано
+```
+
+Тогда итоговый расчет даст:
+
+```text
+CashinSum  = 2 * 100 = 200
+CashoutSum = 3 * 100 = 300
+RemainSum  = 1500 - 300 + 200 = 1400
+```
+
+Ниже полный исправленный код класса `AtmEtlEncashTransactionsCounter` на базе твоего текущего варианта. В нем сохранена старая структура обработки кассет/номиналов и добавлена корректная обработка валовых движений по `cashInCount` / `dispensedCount`. Исходный класс и старая логика были в загруженном фрагменте. 
+
+```java
+package gpb.atm.etl.encash.lbdataoperations;
+
+import gpb.atm.etl.encash.dto.lbdto.AtmEtlEncashTransactionsByIdDto;
+import gpb.atm.etl.encash.dto.lbdto.json.transactions.LbEtlEncashCassetInTransactionDto;
+import gpb.atm.etl.encash.dto.lbdto.json.transactions.LbEtlEncashCassetsTransactionsJsonDto;
+import gpb.atm.etl.encash.dto.lbdto.json.transactions.Nominal;
+import gpb.atm.etl.encash.msgrouter.AtmEtlEncashJsonParser;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.List;
+
+@Component
+public class AtmEtlEncashTransactionsCounter {
+
+    /**
+     * Presented - выдано.
+     */
+    private static final String TRANSACTION_TYPE_PRESENTED = "Presented";
+
+    /**
+     * Accepted - принято.
+     */
+    private static final String TRANSACTION_TYPE_ACCEPTED = "Accepted";
+
+    /**
+     * currencyExchange - валютообмен.
+     *
+     * В рамках одной операции валютообмена может быть два движения:
+     * 1. прием валюты;
+     * 2. выдача рублей.
+     *
+     * Важно:
+     * по одной кассете/номиналу в периоде может одновременно быть:
+     * - Inserted/CashInCount;
+     * - Presented/DispensedCount.
+     *
+     * Поэтому для currencyExchange нельзя возвращать только одну чистую дельту.
+     * Нужно формировать отдельные движения:
+     * - положительное значение для приема;
+     * - отрицательное значение для выдачи.
+     */
+    private static final String TRANSACTION_TYPE_CURRENCY_EXCHANGE = "currencyExchange";
+
+    @Autowired
+    AtmEtlEncashJsonParser lbEncashJsonParser;
+
+    public void getTransactionSumm(List<AtmEtlEncashTransactionsByIdDto> transactions) throws Exception {
+        // Транзакции с данными об изменении счетчиков в кассетах:
+        // HashMap<transId, List<HashMap<casseteId, summ>>>
+        // HashMap<String, List<LbEncashCasseteNominalCounter>> trans = new HashMap<>();
+
+        try {
+            if (transactions != null && !transactions.isEmpty()) {
+                for (AtmEtlEncashTransactionsByIdDto transaction : transactions) {
+                    List<AtmEtlEncashCasseteNominalCounter> cassetsList = new ArrayList<>();
+
+                    /**
+                     * Данные по кассетам на начало транзакции.
+                     */
+                    List<LbEtlEncashCassetInTransactionDto> cassetsTransactionsBeforeList =
+                            getCassetsBeforeTransData(transaction).getCassetsTransactionsJson();
+
+                    /**
+                     * Данные по кассетам на конец транзакции.
+                     */
+                    List<LbEtlEncashCassetInTransactionDto> cassetsTransactionsAfterList =
+                            getCassetsAfterTransData(transaction).getCassetsTransactionsJson();
+
+                    /**
+                     * Если данных по кассетам не существует,
+                     * то создаем новый пустой массив для данных.
+                     */
+                    if (cassetsTransactionsAfterList == null) {
+                        cassetsTransactionsAfterList = new ArrayList<>();
+                    }
+
+                    if (cassetsTransactionsBeforeList == null) {
+                        cassetsTransactionsBeforeList = new ArrayList<>();
+                    }
+
+                    /**
+                     * Ищем и добавляем в json отсутствующие кассеты.
+                     *
+                     * Если кассета есть только в before или только в after,
+                     * добавляем ее во второй список с нулевыми номиналами,
+                     * чтобы расчет разницы не терял кассеты.
+                     */
+                    List<String> newCassets = addCassets(
+                            cassetsTransactionsBeforeList,
+                            cassetsTransactionsAfterList
+                    );
+
+                    /**
+                     * Перебираем кассеты до начала транзакции.
+                     */
+                    for (LbEtlEncashCassetInTransactionDto cassetBefore : cassetsTransactionsBeforeList) {
+
+                        /**
+                         * Перебираем кассеты на конец транзакции.
+                         */
+                        for (LbEtlEncashCassetInTransactionDto cassetAfter : cassetsTransactionsAfterList) {
+
+                            /**
+                             * Находим одну и ту же кассету до и после.
+                             */
+                            if (isSameCassette(cassetBefore, cassetAfter)) {
+
+                                /**
+                                 * Проверяем на наличие значений с номиналами.
+                                 *
+                                 * Если в before и after набор номиналов отличается,
+                                 * добавляем отсутствующие номиналы с нулевыми счетчиками.
+                                 */
+                                normalizeNominals(cassetBefore, cassetAfter);
+
+                                /**
+                                 * Перебираем номиналы, доступные для текущей кассеты.
+                                 */
+                                for (Nominal nominalBefore : cassetBefore.getNominals()) {
+                                    for (Nominal nominalAfter : cassetAfter.getNominals()) {
+
+                                        /**
+                                         * Находим один и тот же номинал до и после.
+                                         */
+                                        if (nominalBefore.getNominalId().equals(nominalAfter.getNominalId())) {
+
+                                            AtmEtlEncashMathMetodByCasseteType mathMetodData =
+                                                    buildMathMethodData(
+                                                            transaction,
+                                                            cassetAfter,
+                                                            nominalBefore,
+                                                            nominalAfter
+                                                    );
+
+                                            /**
+                                             * Определяем метод расчета в зависимости от типа транзакции
+                                             * и вычисляем изменения в кассете за период транзакции по номиналу.
+                                             *
+                                             * Важно:
+                                             * раньше здесь возвращался один counterByNominal.
+                                             *
+                                             * Для currencyExchange и смешанных движений этого недостаточно,
+                                             * потому что по одному номиналу может быть одновременно:
+                                             *
+                                             * - принято Inserted/CashInCount;
+                                             * - выдано Presented/DispensedCount.
+                                             *
+                                             * Поэтому теперь метод возвращает список движений.
+                                             */
+                                            List<AtmEtlEncashCasseteNominalCounter> countersByNominal =
+                                                    getMathMetodByCasseteType(mathMetodData);
+
+                                            /**
+                                             * Сохраняем все движения для текущей кассеты/номинала.
+                                             */
+                                            cassetsList.addAll(countersByNominal);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    /**
+                     * Сохраняем рассчитанные счетчики кассет и номиналов
+                     * в текущую транзакцию.
+                     */
+                    transaction.setCasseteNominalCounter(cassetsList);
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new Exception("Transactions build error: " + e.getMessage());
+        }
+    }
+
+    private AtmEtlEncashMathMetodByCasseteType buildMathMethodData(
+            AtmEtlEncashTransactionsByIdDto transaction,
+            LbEtlEncashCassetInTransactionDto cassetAfter,
+            Nominal nominalBefore,
+            Nominal nominalAfter
+    ) {
+        AtmEtlEncashMathMetodByCasseteType data = new AtmEtlEncashMathMetodByCasseteType();
+
+        data.setTransactionType(transaction.getTt());
+
+        /**
+         * Значения на момент начала транзакции
+         * для текущего номинала.
+         */
+        data.setCurrentCountBefore(nullToZero(nominalBefore.getCurrentCount()));
+        data.setRejectedCountBefore(nullToZero(nominalBefore.getRejectedCount()));
+
+        /**
+         * Значения на момент окончания транзакции
+         * для текущего номинала.
+         */
+        data.setCurrentCountAfter(nullToZero(nominalAfter.getCurrentCount()));
+        data.setRejectedCountAfter(nullToZero(nominalAfter.getRejectedCount()));
+
+        /**
+         * Аппаратные счетчики движения за период.
+         *
+         * CashInCount / Inserted — сколько купюр было принято.
+         * DispensedCount / Presented — сколько купюр было выдано.
+         *
+         * Эти счетчики принципиально важны для currencyExchange,
+         * потому что простая дельта after - before показывает только
+         * итоговое изменение остатка, а не валовые движения.
+         */
+        data.setCashInCount(nullToZero(nominalAfter.getCashInCount()));
+        data.setDispensedCount(nullToZero(nominalAfter.getDispensedCount()));
+
+        /**
+         * Технические идентификаторы кассеты и номинала.
+         */
+        data.setNominalId(nominalAfter.getNominalId());
+        data.setCassetteId(cassetAfter.getCassetteId());
+        data.setCassetteType(cassetAfter.getCassetteType());
+        data.setSlot(cassetAfter.getSlot());
+
+        return data;
+    }
+
+    private boolean isSameCassette(
+            LbEtlEncashCassetInTransactionDto cassetBefore,
+            LbEtlEncashCassetInTransactionDto cassetAfter
+    ) {
+        return cassetAfter.getCassetteId().equals(cassetBefore.getCassetteId())
+                && cassetAfter.getSlot().equals(cassetBefore.getSlot());
+    }
+
+    private void normalizeNominals(
+            LbEtlEncashCassetInTransactionDto cassetBefore,
+            LbEtlEncashCassetInTransactionDto cassetAfter
+    ) {
+        if (cassetAfter.getNominals().size() != cassetBefore.getNominals().size()) {
+
+            /**
+             * Если в after номиналов больше, чем в before,
+             * значит в состоянии after появился номинал,
+             * которого не было в before.
+             *
+             * Чтобы расчет не пропустил этот номинал,
+             * добавляем его в before с нулевыми счетчиками.
+             *
+             * После этого расчет будет:
+             *
+             * before = 0
+             * after  = фактическое значение
+             *
+             * То есть изменение будет положительным,
+             * а не будет интерпретировано как выдача.
+             */
+            if (cassetAfter.getNominals().size() > cassetBefore.getNominals().size()) {
+                if (cassetBefore.getNominals().isEmpty()) {
+                    cassetBefore.setNominals(setNominalsForNewObj(cassetAfter.getNominals()));
+                } else {
+                    setNominalsForExistingCasset(cassetBefore.getNominals(), cassetAfter.getNominals());
+                }
+            }
+
+            /**
+             * Если в before номиналов больше, чем в after,
+             * значит после операции этот номинал отсутствует.
+             *
+             * Чтобы расчет не пропустил этот номинал,
+             * добавляем его в after с нулевыми счетчиками.
+             *
+             * После этого расчет будет:
+             *
+             * before = фактическое значение
+             * after  = 0
+             *
+             * То есть изменение будет отрицательным.
+             */
+            if (cassetAfter.getNominals().size() < cassetBefore.getNominals().size()) {
+                if (cassetAfter.getNominals().isEmpty()) {
+                    cassetAfter.setNominals(setNominalsForNewObj(cassetBefore.getNominals()));
+                } else {
+                    setNominalsForExistingCasset(cassetAfter.getNominals(), cassetBefore.getNominals());
+                }
+            }
+        }
+    }
+
+    private LbEtlEncashCassetsTransactionsJsonDto getCassetsBeforeTransData(
+            AtmEtlEncashTransactionsByIdDto transaction
+    ) {
+        return lbEncashJsonParser.parse(
+                correctTransJson(transaction.getCassettesBeforeJson()),
+                LbEtlEncashCassetsTransactionsJsonDto.class
+        );
+    }
+
+    private LbEtlEncashCassetsTransactionsJsonDto getCassetsAfterTransData(
+            AtmEtlEncashTransactionsByIdDto transaction
+    ) {
+        return lbEncashJsonParser.parse(
+                correctTransJson(transaction.getCassettesAfterJson()),
+                LbEtlEncashCassetsTransactionsJsonDto.class
+        );
+    }
+
+    private String correctTransJson(String json) {
+        return "{\"CassetsTransactions\":" + json + "}";
+    }
+
+    /**
+     * Добавление недостающих кассет.
+     *
+     * Старый смысл метода:
+     * если в before/after отличается набор кассет,
+     * нужно добавить отсутствующие кассеты во второй список,
+     * чтобы дальше основной цикл мог найти пару кассет
+     * и посчитать изменение по номиналам.
+     *
+     * Важно:
+     * здесь дополнительно исправлена опасная ошибка старого подхода:
+     * нельзя добавлять в другой список тот же самый объект по ссылке,
+     * а потом обнулять в нем номиналы.
+     *
+     * Поэтому создается новая кассета-копия с нулевыми номиналами.
+     */
+    private List<String> addCassets(
+            List<LbEtlEncashCassetInTransactionDto> cassetsTransactionsBeforeJsons,
+            List<LbEtlEncashCassetInTransactionDto> cassetsTransactionsAfterJsons
+    ) {
+        List<String> addedSlots = new ArrayList<>();
+
+        /**
+         * Добавляем в after кассеты, которые есть в before,
+         * но отсутствуют в after.
+         */
+        addMissingCassets(
+                cassetsTransactionsBeforeJsons,
+                cassetsTransactionsAfterJsons,
+                addedSlots
+        );
+
+        /**
+         * Добавляем в before кассеты, которые есть в after,
+         * но отсутствуют в before.
+         */
+        addMissingCassets(
+                cassetsTransactionsAfterJsons,
+                cassetsTransactionsBeforeJsons,
+                addedSlots
+        );
+
+        return addedSlots;
+    }
+
+    private void addMissingCassets(
+            List<LbEtlEncashCassetInTransactionDto> source,
+            List<LbEtlEncashCassetInTransactionDto> target,
+            List<String> addedSlots
+    ) {
+        for (LbEtlEncashCassetInTransactionDto sourceCasset : source) {
+            boolean exists = false;
+
+            for (LbEtlEncashCassetInTransactionDto targetCasset : target) {
+                if (sourceCasset.getSlot().equals(targetCasset.getSlot())) {
+                    exists = true;
+                    break;
+                }
+            }
+
+            if (!exists) {
+                LbEtlEncashCassetInTransactionDto obj =
+                        createZeroCountersCassetCopy(sourceCasset);
+
+                target.add(obj);
+                addedSlots.add(sourceCasset.getSlot());
+            }
+        }
+    }
+
+    /**
+     * Создает новую кассету-копию с такими же идентификаторами,
+     * но с нулевыми счетчиками номиналов.
+     *
+     * Это безопаснее, чем:
+     *
+     * LbEtlEncashCassetInTransactionDto obj = casset;
+     *
+     * потому что такой код копирует только ссылку,
+     * и можно случайно обнулить исходную кассету.
+     */
+    private LbEtlEncashCassetInTransactionDto createZeroCountersCassetCopy(
+            LbEtlEncashCassetInTransactionDto sourceCasset
+    ) {
+        LbEtlEncashCassetInTransactionDto obj = new LbEtlEncashCassetInTransactionDto();
+
+        obj.setCassetteId(sourceCasset.getCassetteId());
+        obj.setCassetteType(sourceCasset.getCassetteType());
+        obj.setSlot(sourceCasset.getSlot());
+        obj.setNominals(setNominalsForNewObj(sourceCasset.getNominals()));
+
+        return obj;
+    }
+
+    /**
+     * Добавляет отсутствующие номиналы в уже существующую кассету.
+     *
+     * nominalsMin — список с меньшим количеством номиналов.
+     * nominalsMax — список с большим количеством номиналов.
+     */
+    private void setNominalsForExistingCasset(List<Nominal> nominalsMin, List<Nominal> nominalsMax) {
+        List<Integer> nominalMaxIdList = new ArrayList<>();
+        List<Integer> nominalMinIdList = new ArrayList<>();
+
+        /**
+         * Находим новые номиналы.
+         */
+        for (Nominal nominalMax : nominalsMax) {
+            nominalMaxIdList.add(nominalMax.getNominalId());
+        }
+
+        for (Nominal nominalMin : nominalsMin) {
+            nominalMinIdList.add(nominalMin.getNominalId());
+        }
+
+        List<Integer> newNominalsList = new ArrayList<>(nominalMaxIdList);
+        newNominalsList.removeAll(nominalMinIdList);
+
+        for (Nominal nominalMax : nominalsMax) {
+            for (Integer newNominalId : newNominalsList) {
+                if (nominalMax.getNominalId().equals(newNominalId)) {
+                    Nominal obj = new Nominal();
+
+                    obj.setNominalId(newNominalId);
+                    obj.setCurrentCount(0);
+                    obj.setCashInCount(0);
+                    obj.setDispensedCount(0);
+                    obj.setRejectedCount(0);
+                    obj.setRetractedCount(0);
+                    obj.setInitialCount(0);
+
+                    nominalsMin.add(obj);
+                }
+            }
+        }
+    }
+
+    /**
+     * Создает новый список номиналов с такими же nominalId,
+     * но со всеми счетчиками, равными 0.
+     */
+    private List<Nominal> setNominalsForNewObj(List<Nominal> nominals) {
+        List<Nominal> newList = new ArrayList<>();
+
+        for (Nominal nominal : nominals) {
+            Nominal obj = new Nominal();
+
+            obj.setNominalId(nominal.getNominalId());
+            obj.setCurrentCount(0);
+            obj.setCashInCount(0);
+            obj.setDispensedCount(0);
+            obj.setRejectedCount(0);
+            obj.setRetractedCount(0);
+            obj.setInitialCount(0);
+
+            newList.add(obj);
+        }
+
+        return newList;
+    }
+
+    /**
+     * Presented - выдано.
+     * Accepted - принято.
+     *
+     * Старый подход:
+     *
+     * Количество выданных считалось как разность между количеством до и после
+     * по каждому номиналу каждого слота, где:
+     *
+     * Количество до:
+     * cassettes_before[<slot>][<nominal>]['CurrentCount']
+     * +
+     * cassettes_before[<slot>][<nominal>]['RejectedCount']
+     *
+     * Количество после:
+     * cassettes_after[<slot>][<nominal>]['CurrentCount']
+     * +
+     * cassettes_after[<slot>][<nominal>]['RejectedCount']
+     *
+     * Количество принятых считалось как разность между количеством после и до
+     * по каждому номиналу каждого слота, где:
+     *
+     * Количество до:
+     * cassettes_before[<slot>][<nominal>]['CurrentCount']
+     *
+     * Количество после:
+     * cassettes_after[<slot>][<nominal>]['CurrentCount']
+     *
+     * Новый важный момент:
+     *
+     * Для currencyExchange и смешанных операций одной чистой дельты недостаточно.
+     *
+     * Пример:
+     *
+     * Initial   = 15
+     * Inserted  = 2
+     * Presented = 3
+     * Rejected  = 1
+     * Current   = 13
+     *
+     * Если считать только дельту:
+     *
+     * before = 15
+     * after  = 13 + 1 = 14
+     * delta  = -1
+     *
+     * Получится CashoutSum = 100.
+     *
+     * Но фактически:
+     *
+     * CashinSum  = 2 * 100 = 200
+     * CashoutSum = 3 * 100 = 300
+     * RemainSum  = (13 + 1) * 100 = 1400
+     *
+     * Поэтому здесь возвращается список движений:
+     * - +cashInCount для приема;
+     * - -dispensedCount для выдачи.
+     */
+    private List<AtmEtlEncashCasseteNominalCounter> getMathMetodByCasseteType(
+            AtmEtlEncashMathMetodByCasseteType data
+    ) {
+        List<AtmEtlEncashCasseteNominalCounter> result = new ArrayList<>();
+
+        if (TRANSACTION_TYPE_PRESENTED.equals(data.getTransactionType())) {
+            result.addAll(getPresentedCounters(data));
+            return result;
+        }
+
+        if (TRANSACTION_TYPE_ACCEPTED.equals(data.getTransactionType())) {
+            result.addAll(getAcceptedCounters(data));
+            return result;
+        }
+
+        if (TRANSACTION_TYPE_CURRENCY_EXCHANGE.equals(data.getTransactionType())) {
+            result.addAll(getCurrencyExchangeCounters(data));
+            return result;
+        }
+
+        /**
+         * Защитный fallback.
+         *
+         * В SQL раньше было ELSE 'Accepted', поэтому для неизвестного типа
+         * оставляем поведение ближе к Accepted.
+         */
+        result.addAll(getAcceptedCounters(data));
+        return result;
+    }
+
+    /**
+     * Расчет Presented.
+     *
+     * Правильный источник для суммы выдачи — аппаратный счетчик DispensedCount.
+     *
+     * Если DispensedCount есть, возвращаем отрицательное движение:
+     *
+     * currentCount = -DispensedCount
+     *
+     * Если счетчика нет, используем старую формулу через дельту:
+     *
+     * after(Current + Rejected) - before(Current + Rejected)
+     */
+    private List<AtmEtlEncashCasseteNominalCounter> getPresentedCounters(
+            AtmEtlEncashMathMetodByCasseteType data
+    ) {
+        List<AtmEtlEncashCasseteNominalCounter> result = new ArrayList<>();
+
+        int dispensedCount = nullToZero(data.getDispensedCount());
+
+        if (dispensedCount > 0) {
+            result.add(buildCounter(data, -dispensedCount));
+            return result;
+        }
+
+        int cassettesBefore = data.getCurrentCountBefore() + data.getRejectedCountBefore();
+        int cassettesAfter = data.getCurrentCountAfter() + data.getRejectedCountAfter();
+
+        int delta = cassettesAfter - cassettesBefore;
+
+        if (delta != 0) {
+            result.add(buildCounter(data, delta));
+        }
+
+        return result;
+    }
+
+    /**
+     * Расчет Accepted.
+     *
+     * Правильный источник для суммы приема — аппаратный счетчик CashInCount.
+     *
+     * Если CashInCount есть, возвращаем положительное движение:
+     *
+     * currentCount = +CashInCount
+     *
+     * Если счетчика нет, используем старую формулу через дельту:
+     *
+     * CurrentCountAfter - CurrentCountBefore
+     */
+    private List<AtmEtlEncashCasseteNominalCounter> getAcceptedCounters(
+            AtmEtlEncashMathMetodByCasseteType data
+    ) {
+        List<AtmEtlEncashCasseteNominalCounter> result = new ArrayList<>();
+
+        int cashInCount = nullToZero(data.getCashInCount());
+
+        if (cashInCount > 0) {
+            result.add(buildCounter(data, cashInCount));
+            return result;
+        }
+
+        int delta = data.getCurrentCountAfter() - data.getCurrentCountBefore();
+
+        if (delta != 0) {
+            result.add(buildCounter(data, delta));
+        }
+
+        return result;
+    }
+
+    /**
+     * Расчет currencyExchange.
+     *
+     * Важно:
+     * этот метод не должен выбирать только одну часть операции.
+     *
+     * По одной кассете/номиналу могут быть одновременно:
+     *
+     * - принятые купюры;
+     * - выданные купюры.
+     *
+     * Поэтому для currencyExchange формируем до двух counter:
+     *
+     * 1. +CashInCount, если были приняты купюры;
+     * 2. -DispensedCount, если были выданы купюры.
+     *
+     * Пример:
+     *
+     * Nominal = 100
+     * CashInCount = 2
+     * DispensedCount = 3
+     *
+     * Результат:
+     *
+     * +2  → CashinSum  = 200
+     * -3  → CashoutSum = 300
+     *
+     * Именно это исправляет ошибку, когда раньше считалась только чистая дельта:
+     *
+     * before = 15
+     * after  = 14
+     * delta  = -1
+     *
+     * и в CashoutSum попадало 100 вместо 300.
+     */
+    private List<AtmEtlEncashCasseteNominalCounter> getCurrencyExchangeCounters(
+            AtmEtlEncashMathMetodByCasseteType data
+    ) {
+        List<AtmEtlEncashCasseteNominalCounter> result = new ArrayList<>();
+
+        int cashInCount = nullToZero(data.getCashInCount());
+        int dispensedCount = nullToZero(data.getDispensedCount());
+
+        if (cashInCount > 0) {
+            result.add(buildCounter(data, cashInCount));
+        }
+
+        if (dispensedCount > 0) {
+            result.add(buildCounter(data, -dispensedCount));
+        }
+
+        /**
+         * Если аппаратные счетчики движения отсутствуют,
+         * используем fallback через старую дельту.
+         *
+         * Это нужно, чтобы не потерять старые сценарии,
+         * где в JSON нет CashInCount/DispensedCount.
+         */
+        if (result.isEmpty()) {
+            int acceptedDelta = data.getCurrentCountAfter() - data.getCurrentCountBefore();
+
+            int presentedBefore = data.getCurrentCountBefore() + data.getRejectedCountBefore();
+            int presentedAfter = data.getCurrentCountAfter() + data.getRejectedCountAfter();
+            int presentedDelta = presentedAfter - presentedBefore;
+
+            if (acceptedDelta > 0) {
+                result.add(buildCounter(data, acceptedDelta));
+            } else if (presentedDelta < 0) {
+                result.add(buildCounter(data, presentedDelta));
+            }
+        }
+
+        return result;
+    }
+
+    private AtmEtlEncashCasseteNominalCounter buildCounter(
+            AtmEtlEncashMathMetodByCasseteType data,
+            Integer currentCount
+    ) {
+        return AtmEtlEncashCasseteNominalCounter.builder()
+                .currentCount(currentCount)
+                .nominalId(data.getNominalId())
+                .cassetteType(data.getCassetteType())
+                .cassetteId(data.getCassetteId())
+                .slot(data.getSlot())
+                .build();
+    }
+
+    private Integer nullToZero(Integer value) {
+        return value == null ? 0 : value;
+    }
+}
+```
+
+Важно: этот код предполагает, что в `AtmEtlEncashMathMetodByCasseteType` уже есть поля:
+
+```java
+cashInCount
+dispensedCount
+```
+
+Если их нет, добавь туда:
+
+```java
+private Integer cashInCount;
+private Integer dispensedCount;
+```
+
+и getter/setter. Без этих полей код не скомпилируется, потому что исправление должно брать валовые движения из `Nominal.getCashInCount()` и `Nominal.getDispensedCount()`.
