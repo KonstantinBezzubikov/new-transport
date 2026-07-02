@@ -1,0 +1,84 @@
+@Component
+@Log4j2
+public class AtmEtlEncashRkoDtoBuilder {
+
+    @Autowired
+    AtmEtlEncashSummaryMsgBuilder summaryMsgBuilder;
+    @Autowired
+    AtmEtlEncashLoadDataMsgBuilder loadDataMsgBuilder;
+    @Autowired
+    AtmEtlEncashHardwareCountersMsgBuilder hardwareCountersMsgBuilder;
+    @Autowired
+    AtmEtlEncashEvents events;
+    @Autowired
+    AtmEtlEncashUtils utils;
+    @Autowired
+    AtmEtlEncashIterationContext iterationContext;
+    @Autowired
+    AtmEtlEncashContextBuilder contextBuilder;
+    public void buidRkoDtoList() throws Exception {
+        AtmEtlEncashmentsDto encashments = iterationContext.getLbEncashments();
+        LbEncashExtRkoListDto extRkoListDto = new LbEncashExtRkoListDto();
+        List<LbEncashExtRkoDto> rkoDtoList = new ArrayList<>();
+        List<AtmEtlEncashmentsByDateDto> errorEncashment=encashments.getLbErrorEncashmentsList();
+
+        try {
+        if (encashments.getLbEncashmentsList().size()>0) {
+            //перебираем все инкассации по encashmentId
+            for (AtmEtlEncashmentsByDateDto encashment : encashments.getLbEncashmentsList()) {
+
+                LbEncashExtRkoDto rkoDto = new LbEncashExtRkoDto();
+                String key = encashment.getEncashmentId();
+                try {
+                    //Формируем header
+                    rkoDto.setTid(encashment.getTid());
+                    rkoDto.setEncashmentId(encashment.getEncashmentId());
+                    rkoDto.setEncashmentDateOnServer(utils.dateToString(encashment.getEncashmentDateOnServer()));
+                    rkoDto.setEncashmentPeriodStartDate(
+                            utils.dateToString(encashments.getLbUpperPartReceiptsMap().get(key).getEncashmentPeriodStartDate())
+                    );
+                    rkoDto.setEncashmentPeriodEndDate(
+                            utils.dateToString(encashments.getLbUpperPartReceiptsMap().get(key).getEncashmentPeriodEndDate())
+                    );
+
+                    //Формируем данные по верхней части чека
+                    rkoDto.setSummary(summaryMsgBuilder.buildSummary(encashments, key));
+                    //Формируем данные по нижней части чека
+                    rkoDto.setHardwareCounters(hardwareCountersMsgBuilder.buildHardwareCounters(encashments, key));
+
+                    //Формируем данные по загрузке
+                    rkoDto.setLoadData(loadDataMsgBuilder.buildLoadData(encashments, key));
+
+                    rkoDtoList.add(rkoDto);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    errorEncashment.add(encashment);
+                    encashments.setLbErrorEncashmentsList(errorEncashment);
+                    // events.saveEvent("Building rkoDTO error for encashmentId="+encashment.getEncashmentId()+": "+e.getMessage(),rkoDto.getEncashmentId());
+                    contextBuilder.addEncashmentsExceptions(rkoDto.getEncashmentId(), "Building rkoDTO error for encashmentId=" + encashment.getEncashmentId() + ": " + e.getMessage());
+                    log.error("Building rkoDTO error for encashmentId=" + encashment.getEncashmentId() + ": " + e.getMessage());
+                }
+        }
+
+            extRkoListDto.setEncashExtRkoDtoList(rkoDtoList);
+           extRkoListDto.setWrongEncashmentsData(wrongEncashmentsDataList(errorEncashment));
+
+        }else log.debug("No Encashments in period");
+        } catch (Exception e) {
+            events.saveUnknownError("Building rkoDtoList error: "+e.getMessage());
+            }
+        iterationContext.setRkoDto(extRkoListDto);
+    }
+    private List<WrongEncashmentsDto> wrongEncashmentsDataList(List<AtmEtlEncashmentsByDateDto> errorEncashments){
+        List<WrongEncashmentsDto> wrongEncashmentsData = new ArrayList<>();
+        for (AtmEtlEncashmentsByDateDto errorEncashment:errorEncashments){
+            wrongEncashmentsData.add(
+                    WrongEncashmentsDto.builder()
+                            .encashmentDateOnServer(utils.dateToString(errorEncashment.getEncashmentDateOnServer()))
+                            .encashmentId(errorEncashment.getEncashmentId())
+                            .tid(errorEncashment.getTid())
+                            .build());
+        };
+        return wrongEncashmentsData;
+    }
+}
