@@ -39,10 +39,18 @@ public class AtmEtlEncashTransactionsCounter {
      * - CashInCount / Inserted;
      * - DispensedCount / Presented.
      *
-     * Поэтому для currencyExchange формируем отдельные движения:
+     * Также нельзя брать CashInCount / DispensedCount только из after,
+     * потому что эти счетчики могут быть накопительными.
      *
-     * +CashInCount     - принято;
-     * -DispensedCount  - выдано.
+     * Правильно:
+     *
+     * cashInDelta    = after.CashInCount    - before.CashInCount
+     * dispensedDelta = after.DispensedCount - before.DispensedCount
+     *
+     * После этого формируем отдельные движения:
+     *
+     * +cashInDelta      - принято;
+     * -dispensedDelta   - выдано.
      */
     private static final String TRANSACTION_TYPE_CURRENCY_EXCHANGE = "currencyExchange";
 
@@ -68,13 +76,13 @@ public class AtmEtlEncashTransactionsCounter {
                      * Данные по кассетам на начало транзакции.
                      */
                     List<LbEtlEncashCassetInTransactionDto> cassetsTransactionsBeforeList =
-                            getCassetsBeforeTransData(transaction).getCassetsTransactionsJson();
+                            getCassetsList(getCassetsBeforeTransData(transaction));
 
                     /**
                      * Данные по кассетам на конец транзакции.
                      */
                     List<LbEtlEncashCassetInTransactionDto> cassetsTransactionsAfterList =
-                            getCassetsAfterTransData(transaction).getCassetsTransactionsJson();
+                            getCassetsList(getCassetsAfterTransData(transaction));
 
                     /**
                      * Если данных по кассетам не существует,
@@ -150,7 +158,11 @@ public class AtmEtlEncashTransactionsCounter {
                                              * -N - выдано.
                                              */
                                             List<AtmEtlEncashCasseteNominalCounter> countersByNominal =
-                                                    getMathMetodByCasseteType(mathMetodData, nominalAfter);
+                                                    getMathMetodByCasseteType(
+                                                            mathMetodData,
+                                                            nominalBefore,
+                                                            nominalAfter
+                                                    );
 
                                             cassetsList.addAll(countersByNominal);
                                         }
@@ -304,7 +316,21 @@ public class AtmEtlEncashTransactionsCounter {
         );
     }
 
+    private List<LbEtlEncashCassetInTransactionDto> getCassetsList(
+            LbEtlEncashCassetsTransactionsJsonDto dto
+    ) {
+        if (dto == null || dto.getCassetsTransactionsJson() == null) {
+            return new ArrayList<>();
+        }
+
+        return dto.getCassetsTransactionsJson();
+    }
+
     private String correctTransJson(String json) {
+        if (json == null || json.trim().isEmpty() || "null".equalsIgnoreCase(json.trim())) {
+            return "{\"CassetsTransactions\":[]}";
+        }
+
         return "{\"CassetsTransactions\":" + json + "}";
     }
 
@@ -355,6 +381,10 @@ public class AtmEtlEncashTransactionsCounter {
             List<LbEtlEncashCassetInTransactionDto> target,
             List<String> addedSlots
     ) {
+        if (source == null || target == null) {
+            return;
+        }
+
         for (LbEtlEncashCassetInTransactionDto sourceCasset : source) {
             if (!containsCassetteBySlot(target, sourceCasset.getSlot())) {
                 target.add(createZeroCountersCassetCopy(sourceCasset));
@@ -367,6 +397,10 @@ public class AtmEtlEncashTransactionsCounter {
             List<LbEtlEncashCassetInTransactionDto> cassettes,
             String slot
     ) {
+        if (cassettes == null) {
+            return false;
+        }
+
         for (LbEtlEncashCassetInTransactionDto casset : cassettes) {
             if (safeEquals(slot, casset.getSlot())) {
                 return true;
@@ -425,6 +459,10 @@ public class AtmEtlEncashTransactionsCounter {
             List<Nominal> nominals,
             Integer nominalId
     ) {
+        if (nominals == null) {
+            return false;
+        }
+
         for (Nominal nominal : nominals) {
             if (safeEquals(nominalId, nominal.getNominalId())) {
                 return true;
@@ -514,10 +552,11 @@ public class AtmEtlEncashTransactionsCounter {
      */
     private List<AtmEtlEncashCasseteNominalCounter> getMathMetodByCasseteType(
             AtmEtlEncashMathMetodByCasseteType data,
+            Nominal nominalBefore,
             Nominal nominalAfter
     ) {
         if (TRANSACTION_TYPE_CURRENCY_EXCHANGE.equals(data.getTransactionType())) {
-            return getCurrencyExchangeCounters(data, nominalAfter);
+            return getCurrencyExchangeCounters(data, nominalBefore, nominalAfter);
         }
 
         List<AtmEtlEncashCasseteNominalCounter> result = new ArrayList<>();
@@ -559,18 +598,28 @@ public class AtmEtlEncashTransactionsCounter {
      * - прием валюты;
      * - выдача рублей.
      *
-     * Поэтому используем аппаратные счетчики движения:
+     * Также нельзя брать CashInCount / DispensedCount только из after,
+     * потому что эти счетчики могут быть накопительными.
      *
-     * CashInCount / Inserted      -> положительный counter;
-     * DispensedCount / Presented  -> отрицательный counter.
+     * Правильно:
+     *
+     * cashInDelta    = after.CashInCount    - before.CashInCount
+     * dispensedDelta = after.DispensedCount - before.DispensedCount
      *
      * Пример:
      *
-     * Nominal = 100
-     * CashInCount = 2
-     * DispensedCount = 3
+     * before.DispensedCount = 3
+     * after.DispensedCount  = 6
      *
-     * Результат:
+     * dispensedDelta = 6 - 3 = 3
+     *
+     * Значит выдано 3 купюры, а не 6.
+     *
+     * Пример результата:
+     *
+     * Nominal = 100
+     * cashInDelta = 2
+     * dispensedDelta = 3
      *
      * +2  -> CashinSum  = 200
      * -3  -> CashoutSum = 300
@@ -580,25 +629,31 @@ public class AtmEtlEncashTransactionsCounter {
      */
     private List<AtmEtlEncashCasseteNominalCounter> getCurrencyExchangeCounters(
             AtmEtlEncashMathMetodByCasseteType data,
+            Nominal nominalBefore,
             Nominal nominalAfter
     ) {
         List<AtmEtlEncashCasseteNominalCounter> result = new ArrayList<>();
 
-        int cashInCount = nullToZero(nominalAfter.getCashInCount());
-        int dispensedCount = nullToZero(nominalAfter.getDispensedCount());
+        int cashInDelta =
+                nullToZero(nominalAfter.getCashInCount())
+                        - nullToZero(nominalBefore.getCashInCount());
+
+        int dispensedDelta =
+                nullToZero(nominalAfter.getDispensedCount())
+                        - nullToZero(nominalBefore.getDispensedCount());
 
         /**
          * Приемная часть валютообмена.
          */
-        if (cashInCount > 0) {
-            result.add(buildCounter(data, cashInCount));
+        if (cashInDelta > 0) {
+            result.add(buildCounter(data, cashInDelta));
         }
 
         /**
          * Выдачная часть валютообмена.
          */
-        if (dispensedCount > 0) {
-            result.add(buildCounter(data, -dispensedCount));
+        if (dispensedDelta > 0) {
+            result.add(buildCounter(data, -dispensedDelta));
         }
 
         if (!result.isEmpty()) {
