@@ -1,95 +1,21 @@
-
-2026-07-08 14:53:31:356 INFO g.a.e.e.l.AtmEtlEncashments [scheduling-1] ->Encash: {idx=1, encashId=564, serverTs=2026-05-21 11:00:23.261406, tid=100015}
-2026-07-08 14:53:31:361 INFO g.a.e.e.m.c.LbMonAdapterClientService [scheduling-1] Requesting pointId for: 100015
-2026-07-08 14:53:31:364 DEBUG o.s.c.l.CompositeLog [scheduling-1] HTTP POST https://localhost:8088/api/v1.0/monitoring/get-point-id
-2026-07-08 14:53:31:364 DEBUG o.s.c.l.CompositeLog [scheduling-1] Accept=[text/plain, application/xml, text/xml, application/json, application/*+xml, application/*+json, */*]
-2026-07-08 14:53:31:365 DEBUG o.s.c.l.CompositeLog [scheduling-1] Writing [LbMonAdapterMsPointIdRequestDto(pointId=100015)] as "application/json"
-2026-07-08 14:53:31:376 DEBUG o.s.c.l.CompositeLog [scheduling-1] Response 200 OK
-2026-07-08 14:53:31:377 DEBUG o.s.c.l.CompositeLog [scheduling-1] Reading to [java.lang.String] as "application/json"
-2026-07-08 14:53:31:378 INFO g.a.e.e.m.c.LbMonAdapterClientService [scheduling-1] Successfully got pointId '{"status":"ok","data":"1039"}' for 100015
-2026-07-08 14:53:31:379 INFO g.a.e.e.m.c.LbMonAdapterClientService [scheduling-1] Requesting XFS counters for pointId: 1039, encashment: 212
-2026-07-08 14:53:31:380 DEBUG o.s.c.l.CompositeLog [scheduling-1] HTTP POST https://localhost:8088/api/v1.0/monitoring/get-xfs-counters
-2026-07-08 14:53:31:381 DEBUG o.s.c.l.CompositeLog [scheduling-1] Accept=[text/plain, application/xml, text/xml, application/json, application/*+xml, application/*+json, */*]
-2026-07-08 14:53:31:381 DEBUG o.s.c.l.CompositeLog [scheduling-1] Writing [LbMonAdapterXfsCountersRequestDto(pointId=1039, encashmentNumber=212)] as "application/json"
-2026-07-08 14:53:31:397 DEBUG o.s.c.l.CompositeLog [scheduling-1] Response 200 OK
-2026-07-08 14:53:31:399 DEBUG o.s.c.l.CompositeLog [scheduling-1] Reading to [java.lang.String] as "application/json"
-2026-07-08 14:53:31:400 INFO g.a.e.e.m.c.LbMonAdapterClientService [scheduling-1] Successfully got XFS counters JSON (length: 36207) for 1039/212
-2026-07-08 14:53:31:460 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION DEBUG: txId=abad028d-e825-40a3-b181-bcb4d76a50f2, tt=currencyExchange, beforeCassettes=8, afterCassettes=8
-2026-07-08 14:53:31:462 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=abad028d-e825-40a3-b181-bcb4d76a50f2, tt=currencyExchange, slot=RetractCassette, cassetteId=RTCST, cassetteType=5, beforeNominals=0, afterNominals=0
-2026-07-08 14:53:31:462 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=abad028d-e825-40a3-b181-bcb4d76a50f2, tt=currencyExchange, slot=RejectCassette, cassetteId=RJCST, cassetteType=4, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:467 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE DEBUG: slot=RejectCassette, cassetteType=4, cassetteId=RJCST, nominalId=1, cashInBefore=0, cashInAfter=0, cashInDelta=0, cashInCountSelected=0, dispensedBefore=0, dispensedAfter=0, dispensedDelta=0, currentBefore=1, currentAfter=1, currentDelta=0, rejectedBefore=0, rejectedAfter=0, presentedDelta=0
-2026-07-08 14:53:31:467 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE RESULT: ZERO slot=RejectCassette, cassetteType=4, cassetteId=RJCST, nominalId=1, currentCount=0
-2026-07-08 14:53:31:467 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=abad028d-e825-40a3-b181-bcb4d76a50f2, tt=currencyExchange, slot=CassetteB, cassetteId=CST_B, cassetteType=3, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:468 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE DEBUG: slot=CassetteB, cassetteType=3, cassetteId=CST_B, nominalId=1, cashInBefore=0, cashInAfter=0, cashInDelta=0, cashInCountSelected=0, dispensedBefore=1, dispensedAfter=2, dispensedDelta=1, currentBefore=14, currentAfter=13, currentDelta=-1, rejectedBefore=1, rejectedAfter=1, presentedDelta=-1
-2026-07-08 14:53:31:468 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE RESULT: PRESENTED slot=CassetteB, cassetteType=3, cassetteId=CST_B, nominalId=1, currentCount=-1
-2026-07-08 14:53:31:468 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=abad028d-e825-40a3-b181-bcb4d76a50f2, tt=currencyExchange, slot=CassetteC, cassetteId=CST_C, cassetteType=3, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:469 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE DEBUG: slot=CassetteC, cassetteType=3, cassetteId=CST_C, nominalId=3, cashInBefore=0, cashInAfter=0, cashInDelta=0, cashInCountSelected=0, dispensedBefore=0, dispensedAfter=0, dispensedDelta=0, currentBefore=0, currentAfter=0, currentDelta=0, rejectedBefore=0, rejectedAfter=0, presentedDelta=0
-2026-07-08 14:53:31:470 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE RESULT: ZERO slot=CassetteC, cassetteType=3, cassetteId=CST_C, nominalId=3, currentCount=0
-2026-07-08 14:53:31:471 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=abad028d-e825-40a3-b181-bcb4d76a50f2, tt=currencyExchange, slot=CassetteD, cassetteId=CST_D, cassetteType=3, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:471 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE DEBUG: slot=CassetteD, cassetteType=3, cassetteId=CST_D, nominalId=4, cashInBefore=0, cashInAfter=0, cashInDelta=0, cashInCountSelected=0, dispensedBefore=0, dispensedAfter=0, dispensedDelta=0, currentBefore=0, currentAfter=0, currentDelta=0, rejectedBefore=0, rejectedAfter=0, presentedDelta=0
-2026-07-08 14:53:31:471 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE RESULT: ZERO slot=CassetteD, cassetteType=3, cassetteId=CST_D, nominalId=4, currentCount=0
-2026-07-08 14:53:31:471 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=abad028d-e825-40a3-b181-bcb4d76a50f2, tt=currencyExchange, slot=CassetteE, cassetteId=CST_E, cassetteType=3, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:472 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE DEBUG: slot=CassetteE, cassetteType=3, cassetteId=CST_E, nominalId=6, cashInBefore=0, cashInAfter=0, cashInDelta=0, cashInCountSelected=0, dispensedBefore=0, dispensedAfter=0, dispensedDelta=0, currentBefore=0, currentAfter=0, currentDelta=0, rejectedBefore=0, rejectedAfter=0, presentedDelta=0
-2026-07-08 14:53:31:472 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE RESULT: ZERO slot=CassetteE, cassetteType=3, cassetteId=CST_E, nominalId=6, currentCount=0
-2026-07-08 14:53:31:473 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=abad028d-e825-40a3-b181-bcb4d76a50f2, tt=currencyExchange, slot=DepositCassette, cassetteId=DPCST, cassetteType=1, beforeNominals=0, afterNominals=1
-2026-07-08 14:53:31:474 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=abad028d-e825-40a3-b181-bcb4d76a50f2, tt=currencyExchange, slot=CassetteA, cassetteId=CST_A, cassetteType=2, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:474 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE DEBUG: slot=CassetteA, cassetteType=2, cassetteId=CST_A, nominalId=33, cashInBefore=0, cashInAfter=0, cashInDelta=0, cashInCountSelected=0, dispensedBefore=0, dispensedAfter=0, dispensedDelta=0, currentBefore=0, currentAfter=0, currentDelta=0, rejectedBefore=0, rejectedAfter=0, presentedDelta=0
-2026-07-08 14:53:31:474 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE RESULT: ZERO slot=CassetteA, cassetteType=2, cassetteId=CST_A, nominalId=33, currentCount=0
-2026-07-08 14:53:31:474 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION RESULT DEBUG: txId=abad028d-e825-40a3-b181-bcb4d76a50f2, tt=currencyExchange, countersCount=6
-2026-07-08 14:53:31:492 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION DEBUG: txId=792df2b5-4f6b-4fa3-8726-e073b5c9eae2, tt=currencyExchange, beforeCassettes=8, afterCassettes=8
-2026-07-08 14:53:31:493 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=792df2b5-4f6b-4fa3-8726-e073b5c9eae2, tt=currencyExchange, slot=RetractCassette, cassetteId=RTCST, cassetteType=5, beforeNominals=0, afterNominals=0
-2026-07-08 14:53:31:494 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=792df2b5-4f6b-4fa3-8726-e073b5c9eae2, tt=currencyExchange, slot=RejectCassette, cassetteId=RJCST, cassetteType=4, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:495 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE DEBUG: slot=RejectCassette, cassetteType=4, cassetteId=RJCST, nominalId=1, cashInBefore=0, cashInAfter=0, cashInDelta=0, cashInCountSelected=0, dispensedBefore=0, dispensedAfter=0, dispensedDelta=0, currentBefore=1, currentAfter=1, currentDelta=0, rejectedBefore=0, rejectedAfter=0, presentedDelta=0
-2026-07-08 14:53:31:496 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE RESULT: ZERO slot=RejectCassette, cassetteType=4, cassetteId=RJCST, nominalId=1, currentCount=0
-2026-07-08 14:53:31:497 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=792df2b5-4f6b-4fa3-8726-e073b5c9eae2, tt=currencyExchange, slot=CassetteB, cassetteId=CST_B, cassetteType=3, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:497 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE DEBUG: slot=CassetteB, cassetteType=3, cassetteId=CST_B, nominalId=1, cashInBefore=0, cashInAfter=0, cashInDelta=0, cashInCountSelected=0, dispensedBefore=2, dispensedAfter=3, dispensedDelta=1, currentBefore=13, currentAfter=12, currentDelta=-1, rejectedBefore=1, rejectedAfter=1, presentedDelta=-1
-2026-07-08 14:53:31:497 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE RESULT: PRESENTED slot=CassetteB, cassetteType=3, cassetteId=CST_B, nominalId=1, currentCount=-1
-2026-07-08 14:53:31:498 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=792df2b5-4f6b-4fa3-8726-e073b5c9eae2, tt=currencyExchange, slot=CassetteC, cassetteId=CST_C, cassetteType=3, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:499 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE DEBUG: slot=CassetteC, cassetteType=3, cassetteId=CST_C, nominalId=3, cashInBefore=0, cashInAfter=0, cashInDelta=0, cashInCountSelected=0, dispensedBefore=0, dispensedAfter=0, dispensedDelta=0, currentBefore=0, currentAfter=0, currentDelta=0, rejectedBefore=0, rejectedAfter=0, presentedDelta=0
-2026-07-08 14:53:31:499 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE RESULT: ZERO slot=CassetteC, cassetteType=3, cassetteId=CST_C, nominalId=3, currentCount=0
-2026-07-08 14:53:31:499 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=792df2b5-4f6b-4fa3-8726-e073b5c9eae2, tt=currencyExchange, slot=CassetteD, cassetteId=CST_D, cassetteType=3, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:500 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE DEBUG: slot=CassetteD, cassetteType=3, cassetteId=CST_D, nominalId=4, cashInBefore=0, cashInAfter=0, cashInDelta=0, cashInCountSelected=0, dispensedBefore=0, dispensedAfter=0, dispensedDelta=0, currentBefore=0, currentAfter=0, currentDelta=0, rejectedBefore=0, rejectedAfter=0, presentedDelta=0
-2026-07-08 14:53:31:500 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE RESULT: ZERO slot=CassetteD, cassetteType=3, cassetteId=CST_D, nominalId=4, currentCount=0
-2026-07-08 14:53:31:500 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=792df2b5-4f6b-4fa3-8726-e073b5c9eae2, tt=currencyExchange, slot=CassetteE, cassetteId=CST_E, cassetteType=3, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:502 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE DEBUG: slot=CassetteE, cassetteType=3, cassetteId=CST_E, nominalId=6, cashInBefore=0, cashInAfter=0, cashInDelta=0, cashInCountSelected=0, dispensedBefore=0, dispensedAfter=0, dispensedDelta=0, currentBefore=0, currentAfter=0, currentDelta=0, rejectedBefore=0, rejectedAfter=0, presentedDelta=0
-2026-07-08 14:53:31:502 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE RESULT: ZERO slot=CassetteE, cassetteType=3, cassetteId=CST_E, nominalId=6, currentCount=0
-2026-07-08 14:53:31:504 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=792df2b5-4f6b-4fa3-8726-e073b5c9eae2, tt=currencyExchange, slot=DepositCassette, cassetteId=DPCST, cassetteType=1, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:504 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE DEBUG: slot=DepositCassette, cassetteType=1, cassetteId=DPCST, nominalId=33, cashInBefore=0, cashInAfter=0, cashInDelta=0, cashInCountSelected=0, dispensedBefore=0, dispensedAfter=0, dispensedDelta=0, currentBefore=1, currentAfter=2, currentDelta=1, rejectedBefore=0, rejectedAfter=0, presentedDelta=1
-2026-07-08 14:53:31:505 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE FALLBACK: ACCEPTED_BY_CURRENT_DELTA slot=DepositCassette, cassetteType=1, cassetteId=DPCST, nominalId=33, currentCount=1
-2026-07-08 14:53:31:505 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=792df2b5-4f6b-4fa3-8726-e073b5c9eae2, tt=currencyExchange, slot=CassetteA, cassetteId=CST_A, cassetteType=2, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:505 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE DEBUG: slot=CassetteA, cassetteType=2, cassetteId=CST_A, nominalId=33, cashInBefore=0, cashInAfter=0, cashInDelta=0, cashInCountSelected=0, dispensedBefore=0, dispensedAfter=0, dispensedDelta=0, currentBefore=0, currentAfter=0, currentDelta=0, rejectedBefore=0, rejectedAfter=0, presentedDelta=0
-2026-07-08 14:53:31:506 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CURRENCY_EXCHANGE RESULT: ZERO slot=CassetteA, cassetteType=2, cassetteId=CST_A, nominalId=33, currentCount=0
-2026-07-08 14:53:31:507 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION RESULT DEBUG: txId=792df2b5-4f6b-4fa3-8726-e073b5c9eae2, tt=currencyExchange, countersCount=7
-2026-07-08 14:53:31:521 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION DEBUG: txId=1c28fe88-4d3e-4cb2-90cc-e2c35545a731, tt=Accepted, beforeCassettes=8, afterCassettes=7
-2026-07-08 14:53:31:522 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=1c28fe88-4d3e-4cb2-90cc-e2c35545a731, tt=Accepted, slot=RejectCassette, cassetteId=RJCST, cassetteType=4, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:523 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION COUNTER DEBUG: tt=Accepted, slot=RejectCassette, cassetteType=4, cassetteId=RJCST, nominalId=1, currentCount=0
-2026-07-08 14:53:31:524 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=1c28fe88-4d3e-4cb2-90cc-e2c35545a731, tt=Accepted, slot=CassetteB, cassetteId=CST_B, cassetteType=3, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:524 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION COUNTER DEBUG: tt=Accepted, slot=CassetteB, cassetteType=3, cassetteId=CST_B, nominalId=1, currentCount=2
-2026-07-08 14:53:31:524 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=1c28fe88-4d3e-4cb2-90cc-e2c35545a731, tt=Accepted, slot=CassetteC, cassetteId=CST_C, cassetteType=3, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:524 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION COUNTER DEBUG: tt=Accepted, slot=CassetteC, cassetteType=3, cassetteId=CST_C, nominalId=3, currentCount=0
-2026-07-08 14:53:31:525 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=1c28fe88-4d3e-4cb2-90cc-e2c35545a731, tt=Accepted, slot=CassetteD, cassetteId=CST_D, cassetteType=3, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:525 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION COUNTER DEBUG: tt=Accepted, slot=CassetteD, cassetteType=3, cassetteId=CST_D, nominalId=4, currentCount=0
-2026-07-08 14:53:31:525 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=1c28fe88-4d3e-4cb2-90cc-e2c35545a731, tt=Accepted, slot=CassetteE, cassetteId=CST_E, cassetteType=3, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:525 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION COUNTER DEBUG: tt=Accepted, slot=CassetteE, cassetteType=3, cassetteId=CST_E, nominalId=6, currentCount=0
-2026-07-08 14:53:31:526 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=1c28fe88-4d3e-4cb2-90cc-e2c35545a731, tt=Accepted, slot=DepositCassette, cassetteId=DPCST, cassetteType=1, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:526 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION COUNTER DEBUG: tt=Accepted, slot=DepositCassette, cassetteType=1, cassetteId=DPCST, nominalId=33, currentCount=0
-2026-07-08 14:53:31:526 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=1c28fe88-4d3e-4cb2-90cc-e2c35545a731, tt=Accepted, slot=CassetteA, cassetteId=CST_A, cassetteType=2, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:526 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION COUNTER DEBUG: tt=Accepted, slot=CassetteA, cassetteType=2, cassetteId=CST_A, nominalId=33, currentCount=0
-2026-07-08 14:53:31:526 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION RESULT DEBUG: txId=1c28fe88-4d3e-4cb2-90cc-e2c35545a731, tt=Accepted, countersCount=7
-2026-07-08 14:53:31:533 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION DEBUG: txId=a8a2d7b9-3116-4742-b09d-d8a0fcae0f8f, tt=Presented, beforeCassettes=8, afterCassettes=8
-2026-07-08 14:53:31:533 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=a8a2d7b9-3116-4742-b09d-d8a0fcae0f8f, tt=Presented, slot=RetractCassette, cassetteId=RTCST, cassetteType=5, beforeNominals=0, afterNominals=0
-2026-07-08 14:53:31:533 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=a8a2d7b9-3116-4742-b09d-d8a0fcae0f8f, tt=Presented, slot=RejectCassette, cassetteId=RJCST, cassetteType=4, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:533 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION COUNTER DEBUG: tt=Presented, slot=RejectCassette, cassetteType=4, cassetteId=RJCST, nominalId=1, currentCount=0
-2026-07-08 14:53:31:534 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=a8a2d7b9-3116-4742-b09d-d8a0fcae0f8f, tt=Presented, slot=CassetteB, cassetteId=CST_B, cassetteType=3, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:535 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION COUNTER DEBUG: tt=Presented, slot=CassetteB, cassetteType=3, cassetteId=CST_B, nominalId=1, currentCount=-1
-2026-07-08 14:53:31:539 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=a8a2d7b9-3116-4742-b09d-d8a0fcae0f8f, tt=Presented, slot=CassetteC, cassetteId=CST_C, cassetteType=3, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:539 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION COUNTER DEBUG: tt=Presented, slot=CassetteC, cassetteType=3, cassetteId=CST_C, nominalId=3, currentCount=0
-2026-07-08 14:53:31:541 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=a8a2d7b9-3116-4742-b09d-d8a0fcae0f8f, tt=Presented, slot=CassetteD, cassetteId=CST_D, cassetteType=3, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:541 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION COUNTER DEBUG: tt=Presented, slot=CassetteD, cassetteType=3, cassetteId=CST_D, nominalId=4, currentCount=0
-2026-07-08 14:53:31:541 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=a8a2d7b9-3116-4742-b09d-d8a0fcae0f8f, tt=Presented, slot=CassetteE, cassetteId=CST_E, cassetteType=3, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:541 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION COUNTER DEBUG: tt=Presented, slot=CassetteE, cassetteType=3, cassetteId=CST_E, nominalId=6, currentCount=0
-2026-07-08 14:53:31:542 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=a8a2d7b9-3116-4742-b09d-d8a0fcae0f8f, tt=Presented, slot=DepositCassette, cassetteId=DPCST, cassetteType=1, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:543 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION COUNTER DEBUG: tt=Presented, slot=DepositCassette, cassetteType=1, cassetteId=DPCST, nominalId=33, currentCount=0
-2026-07-08 14:53:31:543 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] CASSETTE DEBUG: txId=a8a2d7b9-3116-4742-b09d-d8a0fcae0f8f, tt=Presented, slot=CassetteA, cassetteId=CST_A, cassetteType=2, beforeNominals=1, afterNominals=1
-2026-07-08 14:53:31:543 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION COUNTER DEBUG: tt=Presented, slot=CassetteA, cassetteType=2, cassetteId=CST_A, nominalId=33, currentCount=0
-2026-07-08 14:53:31:544 INFO g.a.e.e.l.AtmEtlEncashTransactionsCounter [scheduling-1] TRANSACTION RESULT DEBUG: txId=a8a2d7b9-3116-4742-b09d-d8a0fcae0f8f, tt=Presented, countersCount=7
+"Balance": [
+                    {
+                        "CurrencyCode": 643,
+                        "InitialSum": 1500,
+                        "CashoutSum": 300,
+                        "CashinSum": 200,
+                        "RemainSum": 1400
+                    },
+                    {
+                        "CurrencyCode": 840,
+                        "InitialSum": 0,
+                        "CashoutSum": 0,
+                        "CashinSum": 0,
+                        "RemainSum": 0
+                    }
+                ],
+                "Deposit": [
+                    {
+                        "CurrencyCode": 840,
+                        "CashinSum": 2
+                    }
