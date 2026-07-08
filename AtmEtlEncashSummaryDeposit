@@ -18,9 +18,6 @@ public class AtmEtlEncashSummaryDeposit {
     private static final String TRANSACTION_TYPE_ACCEPTED = "Accepted";
     private static final String TRANSACTION_TYPE_CURRENCY_EXCHANGE = "currencyExchange";
 
-    /**
-     * Тип кассеты 1 — депозитная кассета.
-     */
     private static final Integer CASSETTE_TYPE_DEPOSIT = 1;
 
     @Autowired
@@ -38,70 +35,112 @@ public class AtmEtlEncashSummaryDeposit {
         HashMap<Integer, SummaryDeposit> depositHashMap = new HashMap<>();
 
         if (transactions == null || transactions.isEmpty()) {
+            log.info("DEPOSIT DEBUG: transactions is null or empty");
             return depositHashMap;
         }
 
-        /**
-         * Перебираем все транзакции.
-         */
         for (AtmEtlEncashTransactionsByIdDto transaction : transactions) {
-            if (transaction == null || transaction.getCasseteNominalCounter() == null) {
+            if (transaction == null) {
+                log.info("DEPOSIT DEBUG: transaction is null");
                 continue;
             }
 
-            /**
-             * Депозит собираем только для операций, где может быть прием наличных:
-             *
-             * Accepted          — обычный прием.
-             * currencyExchange  — прием валюты при валютообмене.
-             *
-             * Presented не учитываем, потому что это выдача.
-             */
+            if (transaction.getCasseteNominalCounter() == null) {
+                log.info(
+                        "DEPOSIT DEBUG: txId={}, tt={}, casseteNominalCounter is null",
+                        transaction.getId(),
+                        transaction.getTt()
+                );
+                continue;
+            }
+
+            log.info(
+                    "DEPOSIT DEBUG TX: txId={}, tt={}, countersCount={}",
+                    transaction.getId(),
+                    transaction.getTt(),
+                    transaction.getCasseteNominalCounter().size()
+            );
+
             if (!isDepositTransaction(transaction)) {
+                log.info(
+                        "DEPOSIT DEBUG: skip txId={}, tt={} because it is not deposit transaction",
+                        transaction.getId(),
+                        transaction.getTt()
+                );
                 continue;
             }
 
-            /**
-             * Номиналы в кассете типа 1 — депозитная кассета.
-             */
             for (AtmEtlEncashCasseteNominalCounter cassete : transaction.getCasseteNominalCounter()) {
                 if (cassete == null) {
-                    continue;
-                }
-
-                if (!CASSETTE_TYPE_DEPOSIT.equals(cassete.getCassetteType())) {
-                    continue;
-                }
-
-                Integer currentCount = nullToZero(cassete.getCurrentCount());
-
-                /**
-                 * Для Deposit учитываем только положительное движение.
-                 *
-                 * currentCount > 0 — принято.
-                 * currentCount < 0 — выдача/расход, в Deposit не идет.
-                 * currentCount = 0 — движения нет.
-                 *
-                 * Это особенно важно для currencyExchange:
-                 *
-                 * +N — принятая валюта;
-                 * -N — выданные рубли.
-                 *
-                 * В Deposit должна попасть только принятая часть.
-                 */
-                if (currentCount <= 0) {
+                    log.info(
+                            "DEPOSIT DEBUG: txId={}, tt={}, counter is null",
+                            transaction.getId(),
+                            transaction.getTt()
+                    );
                     continue;
                 }
 
                 Integer nominal = nullToZero(dictionary.getOsNominalValue(cassete.getNominalId()));
                 Integer currencyCode = dictionary.getCurrencyCode(cassete.getNominalId());
+                Integer currentCount = nullToZero(cassete.getCurrentCount());
+
+                log.info(
+                        "DEPOSIT DEBUG COUNTER: txId={}, tt={}, slot={}, cassetteType={}, cassetteId={}, nominalId={}, " +
+                                "currentCount={}, nominal={}, currencyCode={}",
+                        transaction.getId(),
+                        transaction.getTt(),
+                        cassete.getSlot(),
+                        cassete.getCassetteType(),
+                        cassete.getCassetteId(),
+                        cassete.getNominalId(),
+                        currentCount,
+                        nominal,
+                        currencyCode
+                );
+
+                if (!CASSETTE_TYPE_DEPOSIT.equals(cassete.getCassetteType())) {
+                    log.info(
+                            "DEPOSIT DEBUG: skip counter because cassetteType != 1, slot={}, cassetteType={}, cassetteId={}, nominalId={}",
+                            cassete.getSlot(),
+                            cassete.getCassetteType(),
+                            cassete.getCassetteId(),
+                            cassete.getNominalId()
+                    );
+                    continue;
+                }
+
+                if (currentCount <= 0) {
+                    log.info(
+                            "DEPOSIT DEBUG: skip counter because currentCount <= 0, slot={}, cassetteType={}, cassetteId={}, nominalId={}, currentCount={}",
+                            cassete.getSlot(),
+                            cassete.getCassetteType(),
+                            cassete.getCassetteId(),
+                            cassete.getNominalId(),
+                            currentCount
+                    );
+                    continue;
+                }
 
                 if (currencyCode == null) {
-                    log.warn("Currency code not found for nominalId={}", cassete.getNominalId());
+                    log.warn(
+                            "DEPOSIT DEBUG: currencyCode not found for nominalId={}, slot={}, cassetteType={}, cassetteId={}",
+                            cassete.getNominalId(),
+                            cassete.getSlot(),
+                            cassete.getCassetteType(),
+                            cassete.getCassetteId()
+                    );
                     continue;
                 }
 
                 Integer cashinSum = currentCount * nominal;
+
+                log.info(
+                        "DEPOSIT DEBUG ADD: currencyCode={}, currentCount={}, nominal={}, cashinSum={}",
+                        currencyCode,
+                        currentCount,
+                        nominal,
+                        cashinSum
+                );
 
                 addDepositSum(
                         depositHashMap,
@@ -110,6 +149,8 @@ public class AtmEtlEncashSummaryDeposit {
                 );
             }
         }
+
+        log.info("DEPOSIT DEBUG RESULT: {}", depositHashMap);
 
         return depositHashMap;
     }
@@ -130,9 +171,6 @@ public class AtmEtlEncashSummaryDeposit {
             return;
         }
 
-        /**
-         * Проверяем, есть ли уже такая валюта.
-         */
         if (depositHashMap.containsKey(currencyCode)) {
             SummaryDeposit summaryDeposit = depositHashMap.get(currencyCode);
 
@@ -143,9 +181,6 @@ public class AtmEtlEncashSummaryDeposit {
             return;
         }
 
-        /**
-         * Если валюты еще нет, создаем новую запись Deposit.
-         */
         SummaryDeposit summaryDeposit = new SummaryDeposit();
         summaryDeposit.setCurrencyCode(currencyCode);
         summaryDeposit.setCashinSum(safeCashinSum);
