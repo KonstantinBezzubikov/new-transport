@@ -29,8 +29,8 @@ public class AtmEtlEncashTransactionsCounter {
      *
      * В рамках одной операции валютообмена может быть два движения:
      *
-     * 1. Прием валюты в депозитную кассету.
-     * 2. Выдача рублей из выдачной / recycle / cashout кассеты.
+     * 1. Прием валюты.
+     * 2. Выдача рублей.
      *
      * Для currencyExchange нельзя считать только одну чистую дельту
      * after - before, потому что по операции могут быть одновременно:
@@ -38,35 +38,27 @@ public class AtmEtlEncashTransactionsCounter {
      * - CashInCount / Inserted;
      * - DispensedCount / Presented.
      *
-     * Важное отличие:
+     * Для приема используем более надежное значение:
      *
-     * 1. Для депозитной кассеты cassetteType = 1:
-     *    берем nominalAfter.getCashInCount().
+     * cashInAfter = after.CashInCount
+     * cashInDelta = after.CashInCount - before.CashInCount
+     * cashInCount = max(cashInAfter, cashInDelta)
      *
-     *    В твоем примере:
+     * Это нужно для кейса, где Deposit.Inserted = 2,
+     * а простая дельта дает 1.
      *
-     *    HardwareCounters.Deposit.Inserted = 2
+     * Для выдачи обязательно используем только дельту:
      *
-     *    Значит в Summary.Deposit должно попасть 2.
+     * dispensedDelta = after.DispensedCount - before.DispensedCount
      *
-     * 2. Для выдачных кассет:
-     *    считаем DispensedCount через дельту:
+     * Это защищает от ошибки, когда:
      *
-     *    dispensedDelta = after.DispensedCount - before.DispensedCount
+     * before.DispensedCount = 3
+     * after.DispensedCount  = 6
      *
-     *    Это защищает от ошибки:
-     *
-     *    before.DispensedCount = 3
-     *    after.DispensedCount  = 6
-     *
-     *    Нужно взять 6 - 3 = 3, а не 6.
+     * Нужно взять 6 - 3 = 3, а не 6.
      */
     private static final String TRANSACTION_TYPE_CURRENCY_EXCHANGE = "currencyExchange";
-
-    /**
-     * Тип кассеты 1 — депозитная кассета.
-     */
-    private static final Integer CASSETTE_TYPE_DEPOSIT = 1;
 
     // private static final Logger log = LogManager.getLogger(LbEtlEncashTransactionsCounter.class);
 
@@ -327,8 +319,8 @@ public class AtmEtlEncashTransactionsCounter {
      *
      * Для currencyExchange используется отдельная логика:
      *
-     * - депозитная кассета cassetteType = 1 дает положительный counter;
-     * - выдачная кассета дает отрицательный counter.
+     * - приемная часть дает положительный counter;
+     * - выдачная часть дает отрицательный counter.
      */
     private List<AtmEtlEncashCasseteNominalCounter> getMathMetodByCasseteType(
             AtmEtlEncashMathMetodByCasseteType data,
@@ -370,34 +362,26 @@ public class AtmEtlEncashTransactionsCounter {
     /**
      * currencyExchange - валютообмен.
      *
-     * Для валютообмена есть две разные зоны учета:
+     * Для приема используем:
      *
-     * 1. Депозитная кассета cassetteType = 1.
+     * cashInAfter = after.CashInCount
+     * cashInDelta = after.CashInCount - before.CashInCount
+     * cashInCount = max(cashInAfter, cashInDelta)
      *
-     *    Это прием валюты.
+     * Это нужно для ситуации, когда по депозитной валюте
+     * HardwareCounters.Deposit.Inserted = 2,
+     * а дельта before/after дает только 1.
      *
-     *    Для нее CashInCount в after уже отражает количество внесенных купюр
-     *    по текущей операции.
+     * Для выдачи используем только дельту:
      *
-     *    Поэтому считаем:
+     * dispensedDelta = after.DispensedCount - before.DispensedCount
      *
-     *    cashInCount = after.CashInCount
+     * Это нужно для ситуации:
      *
-     *    а не:
+     * before.DispensedCount = 3
+     * after.DispensedCount  = 6
      *
-     *    after.CashInCount - before.CashInCount
-     *
-     *    Иначе вместо 2 можем получить 1.
-     *
-     * 2. Кассеты выдачи / recycler / cashout.
-     *
-     *    Для них счетчики DispensedCount могут быть накопительными.
-     *
-     *    Поэтому для выдачи считаем именно дельту:
-     *
-     *    dispensedDelta = after.DispensedCount - before.DispensedCount
-     *
-     *    Это защищает от ошибки 600 вместо 300.
+     * Тогда выдано 3, а не 6.
      */
     private List<AtmEtlEncashCasseteNominalCounter> getCurrencyExchangeCounters(
             AtmEtlEncashMathMetodByCasseteType data,
@@ -406,42 +390,23 @@ public class AtmEtlEncashTransactionsCounter {
     ) {
         List<AtmEtlEncashCasseteNominalCounter> result = new ArrayList<>();
 
-        /**
-         * Депозитная часть валютообмена.
-         *
-         * cassetteType = 1 — депозитная кассета.
-         *
-         * Для нее берем CashInCount из after как количество принятых купюр
-         * по текущей операции.
-         */
-        if (isDepositCassette(data)) {
-            int cashInCount = nullToZero(nominalAfter.getCashInCount());
+        int cashInAfter = nullToZero(nominalAfter.getCashInCount());
 
-            if (cashInCount > 0) {
-                result.add(buildCounter(data, cashInCount));
-                return result;
-            }
-        }
-
-        /**
-         * Для недепозитных кассет считаем дельты аппаратных счетчиков.
-         */
         int cashInDelta =
                 nullToZero(nominalAfter.getCashInCount())
                         - nullToZero(nominalBefore.getCashInCount());
+
+        int cashInCount = Math.max(cashInAfter, cashInDelta);
 
         int dispensedDelta =
                 nullToZero(nominalAfter.getDispensedCount())
                         - nullToZero(nominalBefore.getDispensedCount());
 
         /**
-         * Приемная часть валютообмена в недепозитной кассете.
-         *
-         * Оставляем как защиту для recycle-сценариев,
-         * где прием может отражаться не через cassetteType = 1.
+         * Приемная часть валютообмена.
          */
-        if (cashInDelta > 0) {
-            result.add(buildCounter(data, cashInDelta));
+        if (cashInCount > 0) {
+            result.add(buildCounter(data, cashInCount));
         }
 
         /**
@@ -486,10 +451,6 @@ public class AtmEtlEncashTransactionsCounter {
         result.add(buildCounter(data, 0));
 
         return result;
-    }
-
-    private boolean isDepositCassette(AtmEtlEncashMathMetodByCasseteType data) {
-        return CASSETTE_TYPE_DEPOSIT.equals(data.getCassetteType());
     }
 
     private AtmEtlEncashCasseteNominalCounter buildCounter(
