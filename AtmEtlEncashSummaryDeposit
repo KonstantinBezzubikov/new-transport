@@ -1,0 +1,159 @@
+package gpb.atm.etl.encash.lbdataoperations;
+
+import gpb.atm.etl.encash.common.AtmEtlEncashOsDictionary;
+import gpb.atm.etl.encash.dto.lbdto.AtmEtlEncashTransactionsByIdDto;
+import gpb.atm.etl.encash.dto.rkodto.SummaryDeposit;
+import lombok.extern.log4j.Log4j2;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+
+@Component
+@Log4j2
+public class AtmEtlEncashSummaryDeposit {
+
+    private static final String TRANSACTION_TYPE_ACCEPTED = "Accepted";
+    private static final String TRANSACTION_TYPE_CURRENCY_EXCHANGE = "currencyExchange";
+
+    /**
+     * Тип кассеты 1 — депозитная кассета.
+     */
+    private static final Integer CASSETTE_TYPE_DEPOSIT = 1;
+
+    @Autowired
+    AtmEtlEncashOsDictionary dictionary;
+
+    public List<SummaryDeposit> getDeposit(List<AtmEtlEncashTransactionsByIdDto> transactions) {
+        HashMap<Integer, SummaryDeposit> depositMap = getDepositMap(transactions);
+
+        return new ArrayList<>(depositMap.values());
+    }
+
+    private HashMap<Integer, SummaryDeposit> getDepositMap(
+            List<AtmEtlEncashTransactionsByIdDto> transactions
+    ) {
+        HashMap<Integer, SummaryDeposit> depositHashMap = new HashMap<>();
+
+        if (transactions == null || transactions.isEmpty()) {
+            return depositHashMap;
+        }
+
+        /**
+         * Перебираем все транзакции.
+         */
+        for (AtmEtlEncashTransactionsByIdDto transaction : transactions) {
+            if (transaction == null || transaction.getCasseteNominalCounter() == null) {
+                continue;
+            }
+
+            /**
+             * Депозит собираем только для операций, где может быть прием наличных:
+             *
+             * Accepted          — обычный прием.
+             * currencyExchange  — прием валюты при валютообмене.
+             *
+             * Presented не учитываем, потому что это выдача.
+             */
+            if (!isDepositTransaction(transaction)) {
+                continue;
+            }
+
+            /**
+             * Номиналы в кассете типа 1 — депозитная кассета.
+             */
+            for (AtmEtlEncashCasseteNominalCounter cassete : transaction.getCasseteNominalCounter()) {
+                if (cassete == null) {
+                    continue;
+                }
+
+                if (!CASSETTE_TYPE_DEPOSIT.equals(cassete.getCassetteType())) {
+                    continue;
+                }
+
+                Integer currentCount = nullToZero(cassete.getCurrentCount());
+
+                /**
+                 * Для Deposit учитываем только положительное движение.
+                 *
+                 * currentCount > 0 — принято.
+                 * currentCount < 0 — выдача/расход, в Deposit не идет.
+                 * currentCount = 0 — движения нет.
+                 *
+                 * Это особенно важно для currencyExchange:
+                 *
+                 * +N — принятая валюта;
+                 * -N — выданные рубли.
+                 *
+                 * В Deposit должна попасть только принятая часть.
+                 */
+                if (currentCount <= 0) {
+                    continue;
+                }
+
+                Integer nominal = nullToZero(dictionary.getOsNominalValue(cassete.getNominalId()));
+                Integer currencyCode = dictionary.getCurrencyCode(cassete.getNominalId());
+
+                if (currencyCode == null) {
+                    log.warn("Currency code not found for nominalId={}", cassete.getNominalId());
+                    continue;
+                }
+
+                Integer cashinSum = currentCount * nominal;
+
+                addDepositSum(
+                        depositHashMap,
+                        currencyCode,
+                        cashinSum
+                );
+            }
+        }
+
+        return depositHashMap;
+    }
+
+    private boolean isDepositTransaction(AtmEtlEncashTransactionsByIdDto transaction) {
+        return TRANSACTION_TYPE_ACCEPTED.equals(transaction.getTt())
+                || TRANSACTION_TYPE_CURRENCY_EXCHANGE.equals(transaction.getTt());
+    }
+
+    private void addDepositSum(
+            HashMap<Integer, SummaryDeposit> depositHashMap,
+            Integer currencyCode,
+            Integer cashinSum
+    ) {
+        Integer safeCashinSum = nullToZero(cashinSum);
+
+        if (safeCashinSum == 0) {
+            return;
+        }
+
+        /**
+         * Проверяем, есть ли уже такая валюта.
+         */
+        if (depositHashMap.containsKey(currencyCode)) {
+            SummaryDeposit summaryDeposit = depositHashMap.get(currencyCode);
+
+            summaryDeposit.setCashinSum(
+                    nullToZero(summaryDeposit.getCashinSum()) + safeCashinSum
+            );
+
+            return;
+        }
+
+        /**
+         * Если валюты еще нет, создаем новую запись Deposit.
+         */
+        SummaryDeposit summaryDeposit = new SummaryDeposit();
+        summaryDeposit.setCurrencyCode(currencyCode);
+        summaryDeposit.setCashinSum(safeCashinSum);
+
+        depositHashMap.put(currencyCode, summaryDeposit);
+    }
+
+    private Integer nullToZero(Integer value) {
+        return value == null ? 0 : value;
+    }
+}
