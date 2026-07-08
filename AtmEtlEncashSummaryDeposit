@@ -2,7 +2,11 @@ package gpb.atm.etl.encash.lbdataoperations;
 
 import gpb.atm.etl.encash.common.AtmEtlEncashOsDictionary;
 import gpb.atm.etl.encash.dto.lbdto.AtmEtlEncashTransactionsByIdDto;
+import gpb.atm.etl.encash.dto.lbdto.json.transactions.LbEtlEncashCassetInTransactionDto;
+import gpb.atm.etl.encash.dto.lbdto.json.transactions.LbEtlEncashCassetsTransactionsJsonDto;
+import gpb.atm.etl.encash.dto.lbdto.json.transactions.Nominal;
 import gpb.atm.etl.encash.dto.rkodto.SummaryDeposit;
+import gpb.atm.etl.encash.msgrouter.AtmEtlEncashJsonParser;
 import lombok.extern.log4j.Log4j2;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -18,10 +22,16 @@ public class AtmEtlEncashSummaryDeposit {
     private static final String TRANSACTION_TYPE_ACCEPTED = "Accepted";
     private static final String TRANSACTION_TYPE_CURRENCY_EXCHANGE = "currencyExchange";
 
+    /**
+     * Тип кассеты 1 — депозитная кассета.
+     */
     private static final Integer CASSETTE_TYPE_DEPOSIT = 1;
 
     @Autowired
     AtmEtlEncashOsDictionary dictionary;
+
+    @Autowired
+    AtmEtlEncashJsonParser lbEncashJsonParser;
 
     public List<SummaryDeposit> getDeposit(List<AtmEtlEncashTransactionsByIdDto> transactions) {
         HashMap<Integer, SummaryDeposit> depositMap = getDepositMap(transactions);
@@ -35,129 +45,235 @@ public class AtmEtlEncashSummaryDeposit {
         HashMap<Integer, SummaryDeposit> depositHashMap = new HashMap<>();
 
         if (transactions == null || transactions.isEmpty()) {
-            log.info("DEPOSIT DEBUG: transactions is null or empty");
             return depositHashMap;
         }
 
         for (AtmEtlEncashTransactionsByIdDto transaction : transactions) {
             if (transaction == null) {
-                log.info("DEPOSIT DEBUG: transaction is null");
                 continue;
             }
 
-            if (transaction.getCasseteNominalCounter() == null) {
-                log.info(
-                        "DEPOSIT DEBUG: txId={}, tt={}, casseteNominalCounter is null",
-                        transaction.getId(),
-                        transaction.getTt()
-                );
-                continue;
-            }
-
-            log.info(
-                    "DEPOSIT DEBUG TX: txId={}, tt={}, countersCount={}",
-                    transaction.getId(),
-                    transaction.getTt(),
-                    transaction.getCasseteNominalCounter().size()
-            );
-
+            /*
+             * Deposit считаем только по операциям,
+             * где может быть прием наличных.
+             *
+             * Presented не учитываем.
+             */
             if (!isDepositTransaction(transaction)) {
-                log.info(
-                        "DEPOSIT DEBUG: skip txId={}, tt={} because it is not deposit transaction",
-                        transaction.getId(),
-                        transaction.getTt()
-                );
                 continue;
             }
 
-            for (AtmEtlEncashCasseteNominalCounter cassete : transaction.getCasseteNominalCounter()) {
-                if (cassete == null) {
-                    log.info(
-                            "DEPOSIT DEBUG: txId={}, tt={}, counter is null",
+            List<LbEtlEncashCassetInTransactionDto> cassetsBefore =
+                    getCassetsList(getCassetsBeforeTransData(transaction));
+
+            List<LbEtlEncashCassetInTransactionDto> cassetsAfter =
+                    getCassetsList(getCassetsAfterTransData(transaction));
+
+            if (cassetsAfter.isEmpty()) {
+                continue;
+            }
+
+            /*
+             * Идем от after, потому что возможен кейс:
+             *
+             * beforeNominals = 0
+             * afterNominals  = 1
+             *
+             * Это первая принятая депозитная купюра.
+             */
+            for (LbEtlEncashCassetInTransactionDto cassetAfter : cassetsAfter) {
+                if (cassetAfter == null) {
+                    continue;
+                }
+
+                if (!isDepositCassette(cassetAfter)) {
+                    continue;
+                }
+
+                normalizeNominals(cassetAfter);
+
+                if (cassetAfter.getNominals().isEmpty()) {
+                    continue;
+                }
+
+                LbEtlEncashCassetInTransactionDto cassetBefore =
+                        findSameCassette(cassetsBefore, cassetAfter);
+
+                if (cassetBefore != null) {
+                    normalizeNominals(cassetBefore);
+                }
+
+                for (Nominal nominalAfter : cassetAfter.getNominals()) {
+                    if (nominalAfter == null) {
+                        continue;
+                    }
+
+                    Nominal nominalBefore = null;
+
+                    if (cassetBefore != null) {
+                        nominalBefore =
+                                findNominalById(
+                                        cassetBefore.getNominals(),
+                                        nominalAfter.getNominalId()
+                                );
+                    }
+
+                    Integer depositCount =
+                            calculateDepositCount(nominalBefore, nominalAfter);
+
+                    if (depositCount <= 0) {
+                        continue;
+                    }
+
+                    Integer nominalValue =
+                            nullToZero(dictionary.getOsNominalValue(nominalAfter.getNominalId()));
+
+                    if (nominalValue == 0) {
+                        continue;
+                    }
+
+                    Integer currencyCode =
+                            dictionary.getCurrencyCode(nominalAfter.getNominalId());
+
+                    if (currencyCode == null) {
+                        log.warn(
+                                "Deposit currencyCode not found: txId={}, slot={}, cassetteId={}, nominalId={}",
+                                transaction.getId(),
+                                cassetAfter.getSlot(),
+                                cassetAfter.getCassetteId(),
+                                nominalAfter.getNominalId()
+                        );
+                        continue;
+                    }
+
+                    Integer cashinSum = depositCount * nominalValue;
+
+                    addDepositSum(
+                            depositHashMap,
+                            currencyCode,
+                            cashinSum
+                    );
+
+                    log.debug(
+                            "SUMMARY DEPOSIT: txId={}, tt={}, slot={}, cassetteId={}, nominalId={}, currencyCode={}, nominal={}, depositCount={}, cashinSum={}",
                             transaction.getId(),
-                            transaction.getTt()
+                            transaction.getTt(),
+                            cassetAfter.getSlot(),
+                            cassetAfter.getCassetteId(),
+                            nominalAfter.getNominalId(),
+                            currencyCode,
+                            nominalValue,
+                            depositCount,
+                            cashinSum
                     );
-                    continue;
                 }
-
-                Integer nominal = nullToZero(dictionary.getOsNominalValue(cassete.getNominalId()));
-                Integer currencyCode = dictionary.getCurrencyCode(cassete.getNominalId());
-                Integer currentCount = nullToZero(cassete.getCurrentCount());
-
-                log.info(
-                        "DEPOSIT DEBUG COUNTER: txId={}, tt={}, slot={}, cassetteType={}, cassetteId={}, nominalId={}, " +
-                                "currentCount={}, nominal={}, currencyCode={}",
-                        transaction.getId(),
-                        transaction.getTt(),
-                        cassete.getSlot(),
-                        cassete.getCassetteType(),
-                        cassete.getCassetteId(),
-                        cassete.getNominalId(),
-                        currentCount,
-                        nominal,
-                        currencyCode
-                );
-
-                if (!CASSETTE_TYPE_DEPOSIT.equals(cassete.getCassetteType())) {
-                    log.info(
-                            "DEPOSIT DEBUG: skip counter because cassetteType != 1, slot={}, cassetteType={}, cassetteId={}, nominalId={}",
-                            cassete.getSlot(),
-                            cassete.getCassetteType(),
-                            cassete.getCassetteId(),
-                            cassete.getNominalId()
-                    );
-                    continue;
-                }
-
-                if (currentCount <= 0) {
-                    log.info(
-                            "DEPOSIT DEBUG: skip counter because currentCount <= 0, slot={}, cassetteType={}, cassetteId={}, nominalId={}, currentCount={}",
-                            cassete.getSlot(),
-                            cassete.getCassetteType(),
-                            cassete.getCassetteId(),
-                            cassete.getNominalId(),
-                            currentCount
-                    );
-                    continue;
-                }
-
-                if (currencyCode == null) {
-                    log.warn(
-                            "DEPOSIT DEBUG: currencyCode not found for nominalId={}, slot={}, cassetteType={}, cassetteId={}",
-                            cassete.getNominalId(),
-                            cassete.getSlot(),
-                            cassete.getCassetteType(),
-                            cassete.getCassetteId()
-                    );
-                    continue;
-                }
-
-                Integer cashinSum = currentCount * nominal;
-
-                log.info(
-                        "DEPOSIT DEBUG ADD: currencyCode={}, currentCount={}, nominal={}, cashinSum={}",
-                        currencyCode,
-                        currentCount,
-                        nominal,
-                        cashinSum
-                );
-
-                addDepositSum(
-                        depositHashMap,
-                        currencyCode,
-                        cashinSum
-                );
             }
         }
 
-        log.info("DEPOSIT DEBUG RESULT: {}", depositHashMap);
-
         return depositHashMap;
+    }
+
+    /**
+     * Основная формула для Deposit:
+     *
+     * depositCount = after.CurrentCount - before.CurrentCount
+     *
+     * Если before отсутствует, считаем before = 0.
+     *
+     * Дополнительный fallback:
+     *
+     * если CurrentCount не дал положительную дельту,
+     * пробуем CashInCount:
+     *
+     * cashInDelta = after.CashInCount - before.CashInCount
+     *
+     * Это оставлено для вариантов ОС/терминалов,
+     * где депозит отражается не через CurrentCount.
+     */
+    private Integer calculateDepositCount(
+            Nominal nominalBefore,
+            Nominal nominalAfter
+    ) {
+        Integer currentBefore = getCurrentCount(nominalBefore);
+        Integer currentAfter = getCurrentCount(nominalAfter);
+
+        Integer currentDelta = currentAfter - currentBefore;
+
+        if (currentDelta > 0) {
+            return currentDelta;
+        }
+
+        Integer cashInBefore = getCashInCount(nominalBefore);
+        Integer cashInAfter = getCashInCount(nominalAfter);
+
+        Integer cashInDelta = cashInAfter - cashInBefore;
+
+        if (cashInDelta > 0) {
+            return cashInDelta;
+        }
+
+        /*
+         * Если before-номинала не было, а after.CashInCount заполнен,
+         * можно считать after.CashInCount как количество по операции.
+         */
+        if (nominalBefore == null && cashInAfter > 0) {
+            return cashInAfter;
+        }
+
+        return 0;
     }
 
     private boolean isDepositTransaction(AtmEtlEncashTransactionsByIdDto transaction) {
         return TRANSACTION_TYPE_ACCEPTED.equals(transaction.getTt())
                 || TRANSACTION_TYPE_CURRENCY_EXCHANGE.equals(transaction.getTt());
+    }
+
+    private boolean isDepositCassette(LbEtlEncashCassetInTransactionDto cassette) {
+        return cassette != null
+                && CASSETTE_TYPE_DEPOSIT.equals(cassette.getCassetteType());
+    }
+
+    private LbEtlEncashCassetInTransactionDto findSameCassette(
+            List<LbEtlEncashCassetInTransactionDto> cassettes,
+            LbEtlEncashCassetInTransactionDto target
+    ) {
+        if (cassettes == null || cassettes.isEmpty() || target == null) {
+            return null;
+        }
+
+        for (LbEtlEncashCassetInTransactionDto cassette : cassettes) {
+            if (cassette == null) {
+                continue;
+            }
+
+            if (safeEquals(cassette.getCassetteId(), target.getCassetteId())
+                    && safeEquals(cassette.getSlot(), target.getSlot())) {
+                return cassette;
+            }
+        }
+
+        return null;
+    }
+
+    private Nominal findNominalById(
+            List<Nominal> nominals,
+            Integer nominalId
+    ) {
+        if (nominals == null || nominals.isEmpty()) {
+            return null;
+        }
+
+        for (Nominal nominal : nominals) {
+            if (nominal == null) {
+                continue;
+            }
+
+            if (safeEquals(nominal.getNominalId(), nominalId)) {
+                return nominal;
+            }
+        }
+
+        return null;
     }
 
     private void addDepositSum(
@@ -186,6 +302,72 @@ public class AtmEtlEncashSummaryDeposit {
         summaryDeposit.setCashinSum(safeCashinSum);
 
         depositHashMap.put(currencyCode, summaryDeposit);
+    }
+
+    private LbEtlEncashCassetsTransactionsJsonDto getCassetsBeforeTransData(
+            AtmEtlEncashTransactionsByIdDto transaction
+    ) {
+        return lbEncashJsonParser.parse(
+                correctTransJson(transaction.getCassettesBeforeJson()),
+                LbEtlEncashCassetsTransactionsJsonDto.class
+        );
+    }
+
+    private LbEtlEncashCassetsTransactionsJsonDto getCassetsAfterTransData(
+            AtmEtlEncashTransactionsByIdDto transaction
+    ) {
+        return lbEncashJsonParser.parse(
+                correctTransJson(transaction.getCassettesAfterJson()),
+                LbEtlEncashCassetsTransactionsJsonDto.class
+        );
+    }
+
+    private List<LbEtlEncashCassetInTransactionDto> getCassetsList(
+            LbEtlEncashCassetsTransactionsJsonDto dto
+    ) {
+        if (dto == null || dto.getCassetsTransactionsJson() == null) {
+            return new ArrayList<>();
+        }
+
+        return dto.getCassetsTransactionsJson();
+    }
+
+    private String correctTransJson(String json) {
+        if (json == null || json.trim().isEmpty() || "null".equalsIgnoreCase(json.trim())) {
+            return "{\"CassetsTransactions\":[]}";
+        }
+
+        return "{\"CassetsTransactions\":" + json + "}";
+    }
+
+    private void normalizeNominals(LbEtlEncashCassetInTransactionDto casset) {
+        if (casset.getNominals() == null) {
+            casset.setNominals(new ArrayList<>());
+        }
+    }
+
+    private Integer getCurrentCount(Nominal nominal) {
+        if (nominal == null) {
+            return 0;
+        }
+
+        return nullToZero(nominal.getCurrentCount());
+    }
+
+    private Integer getCashInCount(Nominal nominal) {
+        if (nominal == null) {
+            return 0;
+        }
+
+        return nullToZero(nominal.getCashInCount());
+    }
+
+    private boolean safeEquals(Object first, Object second) {
+        if (first == null) {
+            return second == null;
+        }
+
+        return first.equals(second);
     }
 
     private Integer nullToZero(Integer value) {
