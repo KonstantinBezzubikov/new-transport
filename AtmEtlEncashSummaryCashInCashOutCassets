@@ -1,31 +1,3 @@
-Да, теперь причина понятна.
-
-Ошибка `cashoutSum == null` возникает здесь из-за логики `summaryCassets(...)`:
-
-```java
-if (summaryCassette.getSlot().equals(cassetFromTrans.getSlot())) {
-    if (summaryCassette.getCashoutSum() == null) {
-        summaryCassette.setCashinSum(0);
-        summaryCassette.setCashoutSum(0);
-    }
-    ...
-}
-```
-
-Инициализация `cashinSum/cashoutSum` выполняется **только если по кассете найден счетчик транзакции**.
-Если кассета была загружена, но по ней не было движений, блок `if(summaryCassette.getSlot().equals(...))` не выполнится, и `cashoutSum` останется `null`.
-
-Плюс здесь вообще не обработан новый тип:
-
-```java
-currencyExchange
-```
-
-Поэтому его счетчики игнорируются.
-
-Ниже полный исправленный `AtmEtlEncashSummaryCashInCashOutCassets`.
-
-```java
 package gpb.atm.etl.encash.lbdataoperations;
 
 import gpb.atm.etl.encash.common.AtmEtlEncashOsDictionary;
@@ -37,6 +9,8 @@ import lombok.extern.log4j.Log4j2;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -44,13 +18,32 @@ import java.util.List;
 @Log4j2
 public class AtmEtlEncashSummaryCashInCashOutCassets {
 
-    private static final String TRANSACTION_TYPE_PRESENTED = "Presented";
-    private static final String TRANSACTION_TYPE_ACCEPTED = "Accepted";
-    private static final String TRANSACTION_TYPE_CURRENCY_EXCHANGE = "currencyExchange";
-
     @Autowired
     AtmEtlEncashOsDictionary dictionary;
 
+    /**
+     * Summary.Cassettes строим по итоговым аппаратным счетчикам кассет,
+     * а не по сумме транзакций.
+     *
+     * Почему:
+     *
+     * В таблице инкассации:
+     *
+     * КАССЕТА | ЗАГРУЖЕНО | ВЫДАНО
+     * ВАЛЮТА  | ОСТАЛОСЬ | ПРИНЯТО
+     *
+     * используются итоговые HardwareCounters:
+     *
+     * ЗАГРУЖЕНО = Initial
+     * ВЫДАНО    = Presented
+     * ПРИНЯТО   = Inserted
+     * ОСТАЛОСЬ  = Current + Rejected
+     *
+     * Поэтому транзакции здесь больше не суммируем.
+     *
+     * Параметр transactions оставлен только для совместимости
+     * с текущим вызовом из AtmEtlEncashSummaryMsgBuilder.
+     */
     public List<SummaryCassette> getCassets(
             AtmEtlEncashmentsDto encashments,
             String encashmentId,
@@ -62,32 +55,7 @@ public class AtmEtlEncashSummaryCashInCashOutCassets {
                         .getCassettesData()
                         .getCassetteCountersBefore();
 
-        // Список кассет прием/выдача.
-        List<SummaryCassette> cassets = getCassets(cassetteCountersBeforeList);
-
-        /*
-         * Важно:
-         * cashinSum/cashoutSum должны быть заполнены нулями независимо от того,
-         * были ли движения по конкретной кассете.
-         *
-         * Раньше они инициализировались только внутри совпадения:
-         *
-         * if (summaryCassette.getSlot().equals(cassetFromTrans.getSlot()))
-         *
-         * Из-за этого кассета без операций оставалась с cashoutSum = null,
-         * а дальше падал расчет Balance.
-         */
-        initEmptySums(cassets);
-
-        // Проверяем, есть ли операции за инкассацию.
-        if (transactions != null && !transactions.isEmpty()) {
-            // Перебираем транзакции.
-            for (AtmEtlEncashTransactionsByIdDto transaction : transactions) {
-                summaryCassets(cassets, transaction);
-            }
-        }
-
-        return cassets;
+        return getCassets(cassetteCountersBeforeList);
     }
 
     private List<SummaryCassette> getCassets(List<CassetteCountersBefore> cassetteCountersBeforeList) {
@@ -97,171 +65,334 @@ public class AtmEtlEncashSummaryCashInCashOutCassets {
             return summaryCassettes;
         }
 
-        Integer nominal;
-
         for (CassetteCountersBefore cassetteCounters : cassetteCountersBeforeList) {
+            if (cassetteCounters == null) {
+                continue;
+            }
+
+            /*
+             * Выбираем только кассеты, которые должны попадать
+             * в кассетный Summary / Balance.
+             *
+             * DepositCassette сюда не включается,
+             * она считается отдельно в Summary.Deposit.
+             */
+            if (!dictionary.findRecycleOrCashout(cassetteCounters)) {
+                continue;
+            }
+
             SummaryCassette summaryCassette = new SummaryCassette();
 
-            // Выбираем кассеты по типу (2,3).
-            if (dictionary.findRecycleOrCashout(cassetteCounters)) {
-                // Название кассеты.
-                log.debug("");
-                log.debug("Slot: " + cassetteCounters.getSlot());
-                summaryCassette.setSlot(cassetteCounters.getSlot());
+            Integer nominal = nullToZero(dictionary.getNominal(cassetteCounters));
+            Integer currencyCode = dictionary.getCurrency(cassetteCounters);
 
-                // Находим номинал и валюту по версии OS.
-                nominal = dictionary.getNominal(cassetteCounters);
-                log.debug("Nominal: " + nominal);
-                summaryCassette.setNominal(nominal);
+            /*
+             * dictionary.getInitialCount(...) в текущем коде уже возвращает сумму,
+             * а не количество купюр.
+             *
+             * Это подтверждается текущим результатом:
+             *
+             * Initial = 1500, Nominal = 100
+             * InitialSum = 150000
+             *
+             * Значит InitialSum оставляем через существующий метод словаря.
+             */
+            Integer initialSum = nullToZero(dictionary.getInitialCount(cassetteCounters));
 
-                log.debug("CurrencyCode: " + dictionary.getCurrency(cassetteCounters));
-                summaryCassette.setCurrencyCode(dictionary.getCurrency(cassetteCounters));
+            /*
+             * Остальные значения берем как количество купюр
+             * из аппаратных счетчиков и умножаем на номинал.
+             */
+            Integer insertedCount = getInsertedCount(cassetteCounters);
+            Integer presentedCount = getPresentedCount(cassetteCounters);
+            Integer rejectedCount = getRejectedCount(cassetteCounters);
+            Integer currentCount = getCurrentCount(cassetteCounters);
 
-                // Считаем сумму первоначальной загрузки InitialCount.
-                log.debug("InitialCount: " + dictionary.getInitialCount(cassetteCounters));
-                summaryCassette.setInitialSum(nullToZero(dictionary.getInitialCount(cassetteCounters)));
+            Integer cashinSum = insertedCount * nominal;
+            Integer cashoutSum = presentedCount * nominal;
+            Integer remainSum = (currentCount + rejectedCount) * nominal;
 
-                // Считаем сумму оставшихся RemainSum.
-                // На старте остаток равен первоначальной загрузке.
-                log.debug("getRemainSum: " + dictionary.getInitialCount(cassetteCounters));
-                summaryCassette.setRemainSum(summaryCassette.getInitialSum());
+            summaryCassette.setSlot(cassetteCounters.getSlot());
+            summaryCassette.setCurrencyCode(currencyCode);
+            summaryCassette.setNominal(nominal);
 
-                /*
-                 * Не задаем дефолты в DTO.
-                 * Но в момент сборки SummaryCassette обязательно инициализируем суммы,
-                 * потому что это итоговый объект отчета.
-                 */
-                summaryCassette.setCashinSum(0);
-                summaryCassette.setCashoutSum(0);
+            summaryCassette.setInitialSum(initialSum);
+            summaryCassette.setCashoutSum(cashoutSum);
+            summaryCassette.setCashinSum(cashinSum);
+            summaryCassette.setRemainSum(remainSum);
 
-                summaryCassettes.add(summaryCassette);
-            }
+            summaryCassettes.add(summaryCassette);
+
+            log.debug(
+                    "SUMMARY CASSETTE: slot={}, currencyCode={}, nominal={}, initialSum={}, cashoutSum={}, cashinSum={}, remainSum={}, " +
+                            "insertedCount={}, presentedCount={}, rejectedCount={}, currentCount={}",
+                    summaryCassette.getSlot(),
+                    summaryCassette.getCurrencyCode(),
+                    summaryCassette.getNominal(),
+                    summaryCassette.getInitialSum(),
+                    summaryCassette.getCashoutSum(),
+                    summaryCassette.getCashinSum(),
+                    summaryCassette.getRemainSum(),
+                    insertedCount,
+                    presentedCount,
+                    rejectedCount,
+                    currentCount
+            );
         }
 
         return summaryCassettes;
     }
 
-    private void summaryCassets(
-            List<SummaryCassette> cassets,
-            AtmEtlEncashTransactionsByIdDto transaction
+    /**
+     * Inserted / принято.
+     *
+     * Для примера:
+     *
+     * CassetteB:
+     * Inserted = 189
+     * Nominal = 100
+     * CashinSum = 18900
+     */
+    private Integer getInsertedCount(CassetteCountersBefore cassetteCounters) {
+        return getCounterValue(
+                cassetteCounters,
+                new String[]{
+                        "getInserted",
+                        "getInsertedCount",
+                        "getCashInCount",
+                        "getCashinCount",
+                        "getCashIn",
+                        "getCashin",
+                        "getAccepted",
+                        "getAcceptedCount"
+                },
+                new String[]{
+                        "Inserted",
+                        "InsertedCount",
+                        "CashInCount",
+                        "CashinCount",
+                        "CashIn",
+                        "Cashin",
+                        "Accepted",
+                        "AcceptedCount"
+                }
+        );
+    }
+
+    /**
+     * Presented / выдано.
+     *
+     * Для примера:
+     *
+     * CassetteB:
+     * Presented = 758
+     * Nominal = 100
+     * CashoutSum = 75800
+     */
+    private Integer getPresentedCount(CassetteCountersBefore cassetteCounters) {
+        return getCounterValue(
+                cassetteCounters,
+                new String[]{
+                        "getPresented",
+                        "getPresentedCount",
+                        "getDispensed",
+                        "getDispensedCount",
+                        "getCashOutCount",
+                        "getCashoutCount",
+                        "getCashOut",
+                        "getCashout"
+                },
+                new String[]{
+                        "Presented",
+                        "PresentedCount",
+                        "Dispensed",
+                        "DispensedCount",
+                        "CashOutCount",
+                        "CashoutCount",
+                        "CashOut",
+                        "Cashout"
+                }
+        );
+    }
+
+    /**
+     * Rejected / reject.
+     *
+     * Для остатка используется:
+     *
+     * RemainSum = (Current + Rejected) * Nominal
+     */
+    private Integer getRejectedCount(CassetteCountersBefore cassetteCounters) {
+        return getCounterValue(
+                cassetteCounters,
+                new String[]{
+                        "getRejected",
+                        "getRejectedCount",
+                        "getReject",
+                        "getRejectCount"
+                },
+                new String[]{
+                        "Rejected",
+                        "RejectedCount",
+                        "Reject",
+                        "RejectCount"
+                }
+        );
+    }
+
+    /**
+     * Current / осталось в кассете.
+     *
+     * Для остатка используется:
+     *
+     * RemainSum = (Current + Rejected) * Nominal
+     */
+    private Integer getCurrentCount(CassetteCountersBefore cassetteCounters) {
+        return getCounterValue(
+                cassetteCounters,
+                new String[]{
+                        "getCurrent",
+                        "getCurrentCount"
+                },
+                new String[]{
+                        "Current",
+                        "CurrentCount"
+                }
+        );
+    }
+
+    /**
+     * Безопасное чтение счетчиков из CassetteCountersBefore.
+     *
+     * Сделано через reflection, чтобы не менять:
+     *
+     * - CassetteCountersBefore;
+     * - AtmEtlEncashOsDictionary;
+     * - AtmEtlEncashHardwareCountersMsgBuilder.
+     *
+     * Если в DTO геттер называется иначе, достаточно добавить его имя
+     * в соответствующий массив выше.
+     */
+    private Integer getCounterValue(
+            CassetteCountersBefore cassetteCounters,
+            String[] getterNames,
+            String[] fieldNames
     ) {
-        if (transaction == null || transaction.getCasseteNominalCounter() == null) {
-            return;
+        if (cassetteCounters == null) {
+            return 0;
         }
 
-        for (SummaryCassette summaryCassette : cassets) {
-            /*
-             * Дополнительная защита.
-             *
-             * Даже если SummaryCassette пришла из старого места без инициализации,
-             * перед расчетом гарантируем, что суммы не null.
-             */
-            normalizeSummaryCassette(summaryCassette);
+        Object value = getValueByGetter(cassetteCounters, getterNames);
 
-            // Ищем счетчики для текущей кассеты.
-            for (AtmEtlEncashCasseteNominalCounter cassetFromTrans : transaction.getCasseteNominalCounter()) {
-                if (cassetFromTrans == null) {
-                    continue;
+        if (value == null) {
+            value = getValueByField(cassetteCounters, fieldNames);
+        }
+
+        return objectToInteger(value);
+    }
+
+    private Object getValueByGetter(Object target, String[] getterNames) {
+        if (target == null || getterNames == null) {
+            return null;
+        }
+
+        Class<?> clazz = target.getClass();
+
+        for (String getterName : getterNames) {
+            try {
+                Method method = clazz.getMethod(getterName);
+                method.setAccessible(true);
+                Object value = method.invoke(target);
+
+                if (value != null) {
+                    return value;
                 }
-
-                if (!summaryCassette.getSlot().equals(cassetFromTrans.getSlot())) {
-                    continue;
-                }
-
-                Integer currentCount = nullToZero(cassetFromTrans.getCurrentCount());
-
+            } catch (Exception ignored) {
                 /*
-                 * Нулевое движение не меняет суммы.
-                 * Но кассета уже инициализирована cashinSum=0/cashoutSum=0,
-                 * поэтому null больше не появится.
+                 * Пробуем следующий getter.
                  */
-                if (currentCount == 0) {
-                    continue;
-                }
-
-                Integer transCurrentCount =
-                        Math.abs(currentCount) * nullToZero(summaryCassette.getNominal());
-
-                // Изменение счетчиков для операции внесения.
-                if (TRANSACTION_TYPE_ACCEPTED.equals(transaction.getTt())) {
-                    summaryCassette.setCashinSum(
-                            nullToZero(summaryCassette.getCashinSum()) + transCurrentCount
-                    );
-
-                    summaryCassette.setRemainSum(
-                            nullToZero(summaryCassette.getRemainSum()) + transCurrentCount
-                    );
-                }
-
-                // Изменение счетчиков для операции выдачи.
-                if (TRANSACTION_TYPE_PRESENTED.equals(transaction.getTt())) {
-                    summaryCassette.setCashoutSum(
-                            nullToZero(summaryCassette.getCashoutSum()) + transCurrentCount
-                    );
-
-                    summaryCassette.setRemainSum(
-                            nullToZero(summaryCassette.getRemainSum()) - transCurrentCount
-                    );
-                }
-
-                /*
-                 * Новый тип операции: currencyExchange.
-                 *
-                 * В AtmEtlEncashTransactionsCounter для currencyExchange
-                 * счетчики должны приходить раздельно:
-                 *
-                 * currentCount > 0  — принято;
-                 * currentCount < 0  — выдано.
-                 *
-                 * Поэтому здесь смотрим не только на transaction.getTt(),
-                 * а еще и на знак currentCount.
-                 */
-                if (TRANSACTION_TYPE_CURRENCY_EXCHANGE.equals(transaction.getTt())) {
-                    if (currentCount > 0) {
-                        summaryCassette.setCashinSum(
-                                nullToZero(summaryCassette.getCashinSum()) + transCurrentCount
-                        );
-
-                        summaryCassette.setRemainSum(
-                                nullToZero(summaryCassette.getRemainSum()) + transCurrentCount
-                        );
-                    }
-
-                    if (currentCount < 0) {
-                        summaryCassette.setCashoutSum(
-                                nullToZero(summaryCassette.getCashoutSum()) + transCurrentCount
-                        );
-
-                        summaryCassette.setRemainSum(
-                                nullToZero(summaryCassette.getRemainSum()) - transCurrentCount
-                        );
-                    }
-                }
             }
         }
+
+        return null;
     }
 
-    private void initEmptySums(List<SummaryCassette> cassets) {
-        for (SummaryCassette summaryCassette : cassets) {
-            normalizeSummaryCassette(summaryCassette);
+    private Object getValueByField(Object target, String[] fieldNames) {
+        if (target == null || fieldNames == null) {
+            return null;
         }
+
+        Class<?> clazz = target.getClass();
+
+        for (String fieldName : fieldNames) {
+            Object value = getValueByFieldIgnoreCase(clazz, target, fieldName);
+
+            if (value != null) {
+                return value;
+            }
+        }
+
+        return null;
     }
 
-    private void normalizeSummaryCassette(SummaryCassette summaryCassette) {
-        if (summaryCassette.getInitialSum() == null) {
-            summaryCassette.setInitialSum(0);
+    private Object getValueByFieldIgnoreCase(Class<?> clazz, Object target, String fieldName) {
+        if (clazz == null || Object.class.equals(clazz)) {
+            return null;
         }
 
-        if (summaryCassette.getCashinSum() == null) {
-            summaryCassette.setCashinSum(0);
+        try {
+            for (Field field : clazz.getDeclaredFields()) {
+                if (field.getName().equals(fieldName) || field.getName().equalsIgnoreCase(fieldName)) {
+                    field.setAccessible(true);
+                    return field.get(target);
+                }
+            }
+        } catch (Exception ignored) {
+            /*
+             * Пробуем родительский класс.
+             */
         }
 
-        if (summaryCassette.getCashoutSum() == null) {
-            summaryCassette.setCashoutSum(0);
+        return getValueByFieldIgnoreCase(clazz.getSuperclass(), target, fieldName);
+    }
+
+    private Integer objectToInteger(Object value) {
+        if (value == null) {
+            return 0;
         }
 
-        if (summaryCassette.getRemainSum() == null) {
-            summaryCassette.setRemainSum(nullToZero(summaryCassette.getInitialSum()));
+        if (value instanceof Integer) {
+            return (Integer) value;
+        }
+
+        if (value instanceof Long) {
+            return ((Long) value).intValue();
+        }
+
+        if (value instanceof Short) {
+            return ((Short) value).intValue();
+        }
+
+        if (value instanceof Byte) {
+            return ((Byte) value).intValue();
+        }
+
+        if (value instanceof Double) {
+            return ((Double) value).intValue();
+        }
+
+        if (value instanceof Float) {
+            return ((Float) value).intValue();
+        }
+
+        if (value instanceof Number) {
+            return ((Number) value).intValue();
+        }
+
+        try {
+            return Integer.parseInt(String.valueOf(value));
+        } catch (Exception e) {
+            return 0;
         }
     }
 
@@ -269,29 +400,3 @@ public class AtmEtlEncashSummaryCashInCashOutCassets {
         return value == null ? 0 : value;
     }
 }
-```
-
-Главные исправления:
-
-```java
-summaryCassette.setCashinSum(0);
-summaryCassette.setCashoutSum(0);
-```
-
-теперь выполняются при создании кассеты, а не только если по ней была операция.
-
-И добавлена обработка:
-
-```java
-if (TRANSACTION_TYPE_CURRENCY_EXCHANGE.equals(transaction.getTt())) {
-    if (currentCount > 0) {
-        // принято
-    }
-
-    if (currentCount < 0) {
-        // выдано
-    }
-}
-```
-
-Это нужно, потому что для `currencyExchange` один тип транзакции содержит оба движения.
