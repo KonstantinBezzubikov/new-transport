@@ -5,20 +5,23 @@ import gpb.atm.etl.encash.dto.lbdto.json.transactions.LbEtlEncashCassetInTransac
 import gpb.atm.etl.encash.dto.lbdto.json.transactions.LbEtlEncashCassetsTransactionsJsonDto;
 import gpb.atm.etl.encash.dto.lbdto.json.transactions.Nominal;
 import gpb.atm.etl.encash.msgrouter.AtmEtlEncashJsonParser;
-import lombok.extern.log4j.Log4j2;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
 
-@Log4j2
 @Component
 public class AtmEtlEncashTransactionsCounter {
 
     private static final String TRANSACTION_TYPE_PRESENTED = "Presented";
     private static final String TRANSACTION_TYPE_ACCEPTED = "Accepted";
     private static final String TRANSACTION_TYPE_CURRENCY_EXCHANGE = "currencyExchange";
+
+    /**
+     * Тип кассеты 1 — депозитная кассета.
+     */
+    private static final Integer CASSETTE_TYPE_DEPOSIT = 1;
 
     @Autowired
     AtmEtlEncashJsonParser lbEncashJsonParser;
@@ -35,72 +38,94 @@ public class AtmEtlEncashTransactionsCounter {
                     List<LbEtlEncashCassetInTransactionDto> cassetsTransactionsAfterList =
                             getCassetsList(getCassetsAfterTransData(transaction));
 
-                    log.info(
-                            "TRANSACTION DEBUG: txId={}, tt={}, beforeCassettes={}, afterCassettes={}",
-                            transaction.getId(),
-                            transaction.getTt(),
-                            cassetsTransactionsBeforeList.size(),
-                            cassetsTransactionsAfterList.size()
-                    );
-
                     /*
-                     * Важно:
-                     * не добавляем отсутствующие кассеты с нулевыми счетчиками.
+                     * Не добавляем отсутствующие кассеты целиком с нулевыми счетчиками.
                      *
                      * Если кассета есть в before, но отсутствует в after,
                      * это не всегда означает, что вся кассета была выдана.
                      */
                     if (cassetsTransactionsBeforeList.isEmpty() || cassetsTransactionsAfterList.isEmpty()) {
                         transaction.setCasseteNominalCounter(cassetsList);
-
-                        log.info(
-                                "TRANSACTION DEBUG: txId={}, tt={}, countersCount=0 because before/after cassettes empty",
-                                transaction.getId(),
-                                transaction.getTt()
-                        );
-
                         continue;
                     }
 
                     for (LbEtlEncashCassetInTransactionDto cassetBefore : cassetsTransactionsBeforeList) {
                         for (LbEtlEncashCassetInTransactionDto cassetAfter : cassetsTransactionsAfterList) {
 
-                            if (isSameCassette(cassetBefore, cassetAfter)) {
-                                normalizeNominals(cassetBefore);
-                                normalizeNominals(cassetAfter);
+                            if (!isSameCassette(cassetBefore, cassetAfter)) {
+                                continue;
+                            }
 
-                                log.info(
-                                        "CASSETTE DEBUG: txId={}, tt={}, slot={}, cassetteId={}, cassetteType={}, beforeNominals={}, afterNominals={}",
-                                        transaction.getId(),
-                                        transaction.getTt(),
-                                        cassetAfter.getSlot(),
-                                        cassetAfter.getCassetteId(),
-                                        cassetAfter.getCassetteType(),
-                                        cassetBefore.getNominals().size(),
-                                        cassetAfter.getNominals().size()
-                                );
+                            normalizeNominals(cassetBefore);
+                            normalizeNominals(cassetAfter);
 
-                                for (Nominal nominalBefore : cassetBefore.getNominals()) {
-                                    for (Nominal nominalAfter : cassetAfter.getNominals()) {
+                            /*
+                             * ВАЖНОЕ ИСПРАВЛЕНИЕ:
+                             *
+                             * Для currencyExchange + DepositCassette cassetteType=1
+                             * нельзя идти только от beforeNominals.
+                             *
+                             * В логах есть кейс:
+                             *
+                             * beforeNominals=0
+                             * afterNominals=1
+                             *
+                             * Это первая принятая валютная купюра.
+                             * Старый код ее пропускал полностью.
+                             *
+                             * Поэтому для депозитной части валютообмена идем от afterNominals.
+                             * Если номинала в before нет — считаем before как 0.
+                             */
+                            if (isCurrencyExchange(transaction) && isDepositCassette(cassetAfter)) {
+                                for (Nominal nominalAfter : cassetAfter.getNominals()) {
+                                    Nominal nominalBefore =
+                                            findNominalById(cassetBefore.getNominals(), nominalAfter.getNominalId());
 
-                                        if (safeEquals(nominalBefore.getNominalId(), nominalAfter.getNominalId())) {
-                                            AtmEtlEncashMathMetodByCasseteType mathMetodData =
-                                                    buildMathMethodData(
-                                                            transaction,
-                                                            cassetAfter,
-                                                            nominalBefore,
-                                                            nominalAfter
-                                                    );
+                                    AtmEtlEncashMathMetodByCasseteType mathMetodData =
+                                            buildMathMethodData(
+                                                    transaction,
+                                                    cassetAfter,
+                                                    nominalBefore,
+                                                    nominalAfter
+                                            );
 
-                                            List<AtmEtlEncashCasseteNominalCounter> countersByNominal =
-                                                    getMathMetodByCasseteType(
-                                                            mathMetodData,
-                                                            nominalBefore,
-                                                            nominalAfter
-                                                    );
+                                    List<AtmEtlEncashCasseteNominalCounter> countersByNominal =
+                                            getMathMetodByCasseteType(
+                                                    mathMetodData,
+                                                    nominalBefore,
+                                                    nominalAfter
+                                            );
 
-                                            cassetsList.addAll(countersByNominal);
-                                        }
+                                    cassetsList.addAll(countersByNominal);
+                                }
+
+                                continue;
+                            }
+
+                            /*
+                             * Обычная безопасная логика:
+                             * считаем только номиналы, которые есть и в before, и в after.
+                             */
+                            for (Nominal nominalBefore : cassetBefore.getNominals()) {
+                                for (Nominal nominalAfter : cassetAfter.getNominals()) {
+
+                                    if (safeEquals(nominalBefore.getNominalId(), nominalAfter.getNominalId())) {
+                                        AtmEtlEncashMathMetodByCasseteType mathMetodData =
+                                                buildMathMethodData(
+                                                        transaction,
+                                                        cassetAfter,
+                                                        nominalBefore,
+                                                        nominalAfter
+                                                );
+
+                                        List<AtmEtlEncashCasseteNominalCounter> countersByNominal =
+                                                getMathMetodByCasseteType(
+                                                        mathMetodData,
+                                                        nominalBefore,
+                                                        nominalAfter
+                                                );
+
+                                        cassetsList.addAll(countersByNominal);
                                     }
                                 }
                             }
@@ -108,13 +133,6 @@ public class AtmEtlEncashTransactionsCounter {
                     }
 
                     transaction.setCasseteNominalCounter(cassetsList);
-
-                    log.info(
-                            "TRANSACTION RESULT DEBUG: txId={}, tt={}, countersCount={}",
-                            transaction.getId(),
-                            transaction.getTt(),
-                            cassetsList.size()
-                    );
                 }
             }
         } catch (Exception e) {
@@ -133,11 +151,11 @@ public class AtmEtlEncashTransactionsCounter {
 
         data.setTransactionType(transaction.getTt());
 
-        data.setCurrentCountBefore(nullToZero(nominalBefore.getCurrentCount()));
-        data.setRejectedCountBefore(nullToZero(nominalBefore.getRejectedCount()));
+        data.setCurrentCountBefore(getCurrentCount(nominalBefore));
+        data.setRejectedCountBefore(getRejectedCount(nominalBefore));
 
-        data.setCurrentCountAfter(nullToZero(nominalAfter.getCurrentCount()));
-        data.setRejectedCountAfter(nullToZero(nominalAfter.getRejectedCount()));
+        data.setCurrentCountAfter(getCurrentCount(nominalAfter));
+        data.setRejectedCountAfter(getRejectedCount(nominalAfter));
 
         data.setNominalId(nominalAfter.getNominalId());
         data.setCassetteId(cassetAfter.getCassetteId());
@@ -153,6 +171,34 @@ public class AtmEtlEncashTransactionsCounter {
     ) {
         return safeEquals(cassetAfter.getCassetteId(), cassetBefore.getCassetteId())
                 && safeEquals(cassetAfter.getSlot(), cassetBefore.getSlot());
+    }
+
+    private boolean isCurrencyExchange(AtmEtlEncashTransactionsByIdDto transaction) {
+        return transaction != null
+                && TRANSACTION_TYPE_CURRENCY_EXCHANGE.equals(transaction.getTt());
+    }
+
+    private boolean isDepositCassette(LbEtlEncashCassetInTransactionDto cassette) {
+        return cassette != null
+                && CASSETTE_TYPE_DEPOSIT.equals(cassette.getCassetteType());
+    }
+
+    private Nominal findNominalById(List<Nominal> nominals, Integer nominalId) {
+        if (nominals == null || nominals.isEmpty()) {
+            return null;
+        }
+
+        for (Nominal nominal : nominals) {
+            if (nominal == null) {
+                continue;
+            }
+
+            if (safeEquals(nominal.getNominalId(), nominalId)) {
+                return nominal;
+            }
+        }
+
+        return null;
     }
 
     private void normalizeNominals(LbEtlEncashCassetInTransactionDto casset) {
@@ -222,34 +268,32 @@ public class AtmEtlEncashTransactionsCounter {
             cassettesAfter = data.getCurrentCountAfter();
         }
 
-        Integer currentCount = cassettesAfter - cassettesBefore;
-
-        AtmEtlEncashCasseteNominalCounter counter = buildCounter(data, currentCount);
-        result.add(counter);
-
-        log.info(
-                "TRANSACTION COUNTER DEBUG: tt={}, slot={}, cassetteType={}, cassetteId={}, nominalId={}, currentCount={}",
-                data.getTransactionType(),
-                counter.getSlot(),
-                counter.getCassetteType(),
-                counter.getCassetteId(),
-                counter.getNominalId(),
-                counter.getCurrentCount()
-        );
+        result.add(buildCounter(data, cassettesAfter - cassettesBefore));
 
         return result;
     }
 
     /**
-     * Диагностическая версия для currencyExchange.
+     * currencyExchange - валютообмен.
      *
-     * Прием:
-     * cashInAfter = after.CashInCount
-     * cashInDelta = after.CashInCount - before.CashInCount
-     * cashInCount = max(cashInAfter, cashInDelta)
+     * По логам видно:
      *
-     * Выдача:
-     * dispensedDelta = after.DispensedCount - before.DispensedCount
+     * 1. Для CassetteB выдача идет по DispensedCount:
+     *
+     *    dispensedBefore=1
+     *    dispensedAfter=2
+     *    dispensedDelta=1
+     *
+     *    Значит создаем currentCount=-1.
+     *
+     * 2. Для DepositCassette прием валюты идет не через CashInCount,
+     *    а через CurrentCount:
+     *
+     *    currentBefore=0 / currentAfter=1
+     *    или
+     *    currentBefore=1 / currentAfter=2
+     *
+     *    Значит создаем currentCount=+1 для каждой такой операции.
      */
     private List<AtmEtlEncashCasseteNominalCounter> getCurrencyExchangeCounters(
             AtmEtlEncashMathMetodByCasseteType data,
@@ -258,126 +302,82 @@ public class AtmEtlEncashTransactionsCounter {
     ) {
         List<AtmEtlEncashCasseteNominalCounter> result = new ArrayList<>();
 
-        int cashInBefore = nullToZero(nominalBefore.getCashInCount());
-        int cashInAfter = nullToZero(nominalAfter.getCashInCount());
+        int cashInBefore = getCashInCount(nominalBefore);
+        int cashInAfter = getCashInCount(nominalAfter);
         int cashInDelta = cashInAfter - cashInBefore;
-
-        int dispensedBefore = nullToZero(nominalBefore.getDispensedCount());
-        int dispensedAfter = nullToZero(nominalAfter.getDispensedCount());
-        int dispensedDelta = dispensedAfter - dispensedBefore;
-
-        int currentBefore = nullToZero(nominalBefore.getCurrentCount());
-        int currentAfter = nullToZero(nominalAfter.getCurrentCount());
-        int currentDelta = currentAfter - currentBefore;
-
-        int rejectedBefore = nullToZero(nominalBefore.getRejectedCount());
-        int rejectedAfter = nullToZero(nominalAfter.getRejectedCount());
-
-        int presentedBefore = currentBefore + rejectedBefore;
-        int presentedAfter = currentAfter + rejectedAfter;
-        int presentedDelta = presentedAfter - presentedBefore;
-
         int cashInCount = Math.max(cashInAfter, cashInDelta);
 
-        log.info(
-                "CURRENCY_EXCHANGE DEBUG: slot={}, cassetteType={}, cassetteId={}, nominalId={}, " +
-                        "cashInBefore={}, cashInAfter={}, cashInDelta={}, cashInCountSelected={}, " +
-                        "dispensedBefore={}, dispensedAfter={}, dispensedDelta={}, " +
-                        "currentBefore={}, currentAfter={}, currentDelta={}, " +
-                        "rejectedBefore={}, rejectedAfter={}, presentedDelta={}",
-                data.getSlot(),
-                data.getCassetteType(),
-                data.getCassetteId(),
-                data.getNominalId(),
-                cashInBefore,
-                cashInAfter,
-                cashInDelta,
-                cashInCount,
-                dispensedBefore,
-                dispensedAfter,
-                dispensedDelta,
-                currentBefore,
-                currentAfter,
-                currentDelta,
-                rejectedBefore,
-                rejectedAfter,
-                presentedDelta
-        );
+        int dispensedBefore = getDispensedCount(nominalBefore);
+        int dispensedAfter = getDispensedCount(nominalAfter);
+        int dispensedDelta = dispensedAfter - dispensedBefore;
 
-        if (cashInCount > 0) {
-            AtmEtlEncashCasseteNominalCounter counter = buildCounter(data, cashInCount);
-            result.add(counter);
+        int currentDelta = data.getCurrentCountAfter() - data.getCurrentCountBefore();
 
-            log.info(
-                    "CURRENCY_EXCHANGE RESULT: ACCEPTED slot={}, cassetteType={}, cassetteId={}, nominalId={}, currentCount={}",
-                    counter.getSlot(),
-                    counter.getCassetteType(),
-                    counter.getCassetteId(),
-                    counter.getNominalId(),
-                    counter.getCurrentCount()
-            );
+        int presentedBefore = data.getCurrentCountBefore() + data.getRejectedCountBefore();
+        int presentedAfter = data.getCurrentCountAfter() + data.getRejectedCountAfter();
+        int presentedDelta = presentedAfter - presentedBefore;
+
+        /*
+         * Депозитная часть валютообмена.
+         *
+         * Для DepositCassette в твоих логах CashInCount = 0,
+         * но CurrentCount меняется:
+         *
+         * before 0 -> after 1
+         * before 1 -> after 2
+         *
+         * Поэтому для cassetteType=1 берем положительный currentDelta.
+         */
+        if (CASSETTE_TYPE_DEPOSIT.equals(data.getCassetteType())) {
+            if (currentDelta > 0) {
+                result.add(buildCounter(data, currentDelta));
+                return result;
+            }
+
+            if (cashInCount > 0) {
+                result.add(buildCounter(data, cashInCount));
+                return result;
+            }
+
+            result.add(buildCounter(data, 0));
+            return result;
         }
 
-        if (dispensedDelta > 0) {
-            AtmEtlEncashCasseteNominalCounter counter = buildCounter(data, -dispensedDelta);
-            result.add(counter);
+        /*
+         * Приемная часть для недепозитных кассет.
+         */
+        if (cashInCount > 0) {
+            result.add(buildCounter(data, cashInCount));
+        }
 
-            log.info(
-                    "CURRENCY_EXCHANGE RESULT: PRESENTED slot={}, cassetteType={}, cassetteId={}, nominalId={}, currentCount={}",
-                    counter.getSlot(),
-                    counter.getCassetteType(),
-                    counter.getCassetteId(),
-                    counter.getNominalId(),
-                    counter.getCurrentCount()
-            );
+        /*
+         * Выдачная часть.
+         *
+         * Для выдачи обязательно используем только дельту DispensedCount,
+         * чтобы не получить 600 вместо 300.
+         */
+        if (dispensedDelta > 0) {
+            result.add(buildCounter(data, -dispensedDelta));
         }
 
         if (!result.isEmpty()) {
             return result;
         }
 
+        /*
+         * Fallback.
+         */
         if (currentDelta > 0) {
-            AtmEtlEncashCasseteNominalCounter counter = buildCounter(data, currentDelta);
-            result.add(counter);
-
-            log.info(
-                    "CURRENCY_EXCHANGE FALLBACK: ACCEPTED_BY_CURRENT_DELTA slot={}, cassetteType={}, cassetteId={}, nominalId={}, currentCount={}",
-                    counter.getSlot(),
-                    counter.getCassetteType(),
-                    counter.getCassetteId(),
-                    counter.getNominalId(),
-                    counter.getCurrentCount()
-            );
-
+            result.add(buildCounter(data, currentDelta));
             return result;
         }
 
         if (presentedDelta < 0) {
-            AtmEtlEncashCasseteNominalCounter counter = buildCounter(data, presentedDelta);
-            result.add(counter);
-
-            log.info(
-                    "CURRENCY_EXCHANGE FALLBACK: PRESENTED_BY_PRESENTED_DELTA slot={}, cassetteType={}, cassetteId={}, nominalId={}, currentCount={}",
-                    counter.getSlot(),
-                    counter.getCassetteType(),
-                    counter.getCassetteId(),
-                    counter.getNominalId(),
-                    counter.getCurrentCount()
-            );
-
+            result.add(buildCounter(data, presentedDelta));
             return result;
         }
 
-        AtmEtlEncashCasseteNominalCounter counter = buildCounter(data, 0);
-        result.add(counter);
-
-        log.info(
-                "CURRENCY_EXCHANGE RESULT: ZERO slot={}, cassetteType={}, cassetteId={}, nominalId={}, currentCount=0",
-                counter.getSlot(),
-                counter.getCassetteType(),
-                counter.getCassetteId(),
-                counter.getNominalId()
-        );
+        result.add(buildCounter(data, 0));
 
         return result;
     }
@@ -393,6 +393,38 @@ public class AtmEtlEncashTransactionsCounter {
                 .cassetteId(data.getCassetteId())
                 .slot(data.getSlot())
                 .build();
+    }
+
+    private Integer getCurrentCount(Nominal nominal) {
+        if (nominal == null) {
+            return 0;
+        }
+
+        return nullToZero(nominal.getCurrentCount());
+    }
+
+    private Integer getRejectedCount(Nominal nominal) {
+        if (nominal == null) {
+            return 0;
+        }
+
+        return nullToZero(nominal.getRejectedCount());
+    }
+
+    private Integer getCashInCount(Nominal nominal) {
+        if (nominal == null) {
+            return 0;
+        }
+
+        return nullToZero(nominal.getCashInCount());
+    }
+
+    private Integer getDispensedCount(Nominal nominal) {
+        if (nominal == null) {
+            return 0;
+        }
+
+        return nullToZero(nominal.getDispensedCount());
     }
 
     private boolean safeEquals(Object first, Object second) {
