@@ -1,0 +1,512 @@
+package gpb.atm.etl.encash.lbdataoperations;
+
+import gpb.atm.etl.encash.common.AtmEtlEncashOsDictionary;
+import gpb.atm.etl.encash.dto.lbdto.AtmEtlEncashTransactionsByIdDto;
+import gpb.atm.etl.encash.dto.lbdto.AtmEtlEncashmentsDto;
+import gpb.atm.etl.encash.dto.lbdto.json.receipts.upperpart.CassetteCountersBefore;
+import gpb.atm.etl.encash.dto.lbdto.json.transactions.LbEtlEncashCassetInTransactionDto;
+import gpb.atm.etl.encash.dto.lbdto.json.transactions.LbEtlEncashCassetsTransactionsJsonDto;
+import gpb.atm.etl.encash.dto.lbdto.json.transactions.Nominal;
+import gpb.atm.etl.encash.dto.rkodto.SummaryCassette;
+import gpb.atm.etl.encash.msgrouter.AtmEtlEncashJsonParser;
+import lombok.extern.log4j.Log4j2;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.List;
+
+@Component
+@Log4j2
+public class AtmEtlEncashSummaryCashInCashOutCassets {
+
+    @Autowired
+    AtmEtlEncashOsDictionary dictionary;
+
+    @Autowired
+    AtmEtlEncashJsonParser lbEncashJsonParser;
+
+    /**
+     * Summary.Cassettes строим без HardwareCounters.
+     *
+     * InitialSum:
+     *   берем из верхней части чека через dictionary.getInitialCount(...).
+     *
+     * CashinSum:
+     *   считаем только как сумму положительных дельт CashInCount
+     *   внутри конкретных транзакций:
+     *
+     *   cashInDelta = after.CashInCount - before.CashInCount
+     *
+     * CashoutSum:
+     *   считаем только как сумму положительных дельт DispensedCount
+     *   внутри конкретных транзакций:
+     *
+     *   dispensedDelta = after.DispensedCount - before.DispensedCount
+     *
+     * RemainSum:
+     *   InitialSum - CashoutSum + CashinSum.
+     *
+     * Важно:
+     *   не используем max(CashInCount) / max(DispensedCount),
+     *   потому что это может подтянуть накопленные значения,
+     *   не связанные с текущими транзакциями.
+     */
+    public List<SummaryCassette> getCassets(
+            AtmEtlEncashmentsDto encashments,
+            String encashmentId,
+            List<AtmEtlEncashTransactionsByIdDto> transactions
+    ) {
+        List<CassetteCountersBefore> cassetteCountersBeforeList =
+                encashments.getLbUpperPartReceiptsMap()
+                        .get(encashmentId)
+                        .getCassettesData()
+                        .getCassetteCountersBefore();
+
+        List<SummaryCassette> cassets = getBaseCassets(cassetteCountersBeforeList);
+
+        fillCashInCashOutFromTransactionDeltas(cassets, transactions);
+
+        recalculateRemain(cassets);
+
+        return cassets;
+    }
+
+    /**
+     * Создаем базовый список кассет из верхней части чека.
+     *
+     * Здесь заполняем:
+     *
+     * - Slot;
+     * - CurrencyCode;
+     * - Nominal;
+     * - InitialSum;
+     * - CashoutSum = 0;
+     * - CashinSum = 0;
+     * - RemainSum = InitialSum.
+     */
+    private List<SummaryCassette> getBaseCassets(
+            List<CassetteCountersBefore> cassetteCountersBeforeList
+    ) {
+        List<SummaryCassette> summaryCassettes = new ArrayList<>();
+
+        if (cassetteCountersBeforeList == null || cassetteCountersBeforeList.isEmpty()) {
+            return summaryCassettes;
+        }
+
+        for (CassetteCountersBefore cassetteCounters : cassetteCountersBeforeList) {
+            if (cassetteCounters == null) {
+                continue;
+            }
+
+            /*
+             * В Summary.Cassettes включаем только кассеты,
+             * относящиеся к кассетному балансу.
+             *
+             * DepositCassette сюда не включаем.
+             * Deposit считается отдельно в AtmEtlEncashSummaryDeposit.
+             */
+            if (!dictionary.findRecycleOrCashout(cassetteCounters)) {
+                continue;
+            }
+
+            SummaryCassette summaryCassette = new SummaryCassette();
+
+            Integer nominal = nullToZero(dictionary.getNominal(cassetteCounters));
+            Integer currencyCode = dictionary.getCurrency(cassetteCounters);
+            Integer initialSum = nullToZero(dictionary.getInitialCount(cassetteCounters));
+
+            summaryCassette.setSlot(cassetteCounters.getSlot());
+            summaryCassette.setCurrencyCode(currencyCode);
+            summaryCassette.setNominal(nominal);
+
+            summaryCassette.setInitialSum(initialSum);
+            summaryCassette.setCashoutSum(0);
+            summaryCassette.setCashinSum(0);
+            summaryCassette.setRemainSum(initialSum);
+
+            summaryCassettes.add(summaryCassette);
+        }
+
+        return summaryCassettes;
+    }
+
+    /**
+     * Заполняем CashinSum и CashoutSum только по дельтам before/after
+     * в рамках каждой транзакции.
+     *
+     * Не используем HardwareCounters.
+     * Не используем max(...) по накопительным значениям.
+     */
+    private void fillCashInCashOutFromTransactionDeltas(
+            List<SummaryCassette> cassets,
+            List<AtmEtlEncashTransactionsByIdDto> transactions
+    ) {
+        if (cassets == null || cassets.isEmpty()) {
+            return;
+        }
+
+        if (transactions == null || transactions.isEmpty()) {
+            return;
+        }
+
+        for (AtmEtlEncashTransactionsByIdDto transaction : transactions) {
+            if (transaction == null) {
+                continue;
+            }
+
+            List<LbEtlEncashCassetInTransactionDto> cassetsBefore =
+                    getCassetsList(getCassetsBeforeTransData(transaction));
+
+            List<LbEtlEncashCassetInTransactionDto> cassetsAfter =
+                    getCassetsList(getCassetsAfterTransData(transaction));
+
+            if (cassetsAfter.isEmpty()) {
+                continue;
+            }
+
+            /*
+             * Идем от after, потому что возможен кейс:
+             *
+             * beforeNominals = 0
+             * afterNominals  = 1
+             *
+             * Это первая купюра по номиналу.
+             */
+            for (LbEtlEncashCassetInTransactionDto cassetAfter : cassetsAfter) {
+                if (cassetAfter == null) {
+                    continue;
+                }
+
+                normalizeNominals(cassetAfter);
+
+                if (cassetAfter.getNominals().isEmpty()) {
+                    continue;
+                }
+
+                LbEtlEncashCassetInTransactionDto cassetBefore =
+                        findSameCassette(cassetsBefore, cassetAfter);
+
+                if (cassetBefore != null) {
+                    normalizeNominals(cassetBefore);
+                }
+
+                for (Nominal nominalAfter : cassetAfter.getNominals()) {
+                    if (nominalAfter == null) {
+                        continue;
+                    }
+
+                    Nominal nominalBefore = null;
+
+                    if (cassetBefore != null) {
+                        nominalBefore =
+                                findNominalById(
+                                        cassetBefore.getNominals(),
+                                        nominalAfter.getNominalId()
+                                );
+                    }
+
+                    SummaryCassette summaryCassette =
+                            findSummaryCassetteByTransactionNominal(
+                                    cassets,
+                                    cassetAfter,
+                                    nominalAfter
+                            );
+
+                    if (summaryCassette == null) {
+                        continue;
+                    }
+
+                    Integer nominalValue = nullToZero(summaryCassette.getNominal());
+
+                    if (nominalValue == 0) {
+                        continue;
+                    }
+
+                    /*
+                     * Прием.
+                     *
+                     * CashInCount может быть накопительным,
+                     * поэтому берем только движение внутри транзакции:
+                     *
+                     * after.CashInCount - before.CashInCount.
+                     */
+                    Integer cashInDelta =
+                            getCashInCount(nominalAfter) - getCashInCount(nominalBefore);
+
+                    if (cashInDelta > 0) {
+                        summaryCassette.setCashinSum(
+                                nullToZero(summaryCassette.getCashinSum())
+                                        + cashInDelta * nominalValue
+                        );
+                    }
+
+                    /*
+                     * Выдача.
+                     *
+                     * DispensedCount также может быть накопительным,
+                     * поэтому берем только движение внутри транзакции:
+                     *
+                     * after.DispensedCount - before.DispensedCount.
+                     */
+                    Integer dispensedDelta =
+                            getDispensedCount(nominalAfter) - getDispensedCount(nominalBefore);
+
+                    if (dispensedDelta > 0) {
+                        summaryCassette.setCashoutSum(
+                                nullToZero(summaryCassette.getCashoutSum())
+                                        + dispensedDelta * nominalValue
+                        );
+                    }
+
+                    /*
+                     * Fallback для старых/особых ОС:
+                     *
+                     * Если CashInCount не заполнен, но по Accepted видно увеличение CurrentCount,
+                     * считаем это приемом.
+                     *
+                     * Если DispensedCount не заполнен, но видно уменьшение
+                     * CurrentCount + RejectedCount, считаем это выдачей.
+                     *
+                     * Эти fallback-ветки срабатывают только если основные счетчики
+                     * не дали движения.
+                     */
+                    if (cashInDelta <= 0 && isAcceptedTransaction(transaction)) {
+                        Integer currentDelta =
+                                getCurrentCount(nominalAfter) - getCurrentCount(nominalBefore);
+
+                        if (currentDelta > 0) {
+                            summaryCassette.setCashinSum(
+                                    nullToZero(summaryCassette.getCashinSum())
+                                            + currentDelta * nominalValue
+                            );
+                        }
+                    }
+
+                    if (dispensedDelta <= 0 && isPresentedTransaction(transaction)) {
+                        Integer presentedBefore =
+                                getCurrentCount(nominalBefore) + getRejectedCount(nominalBefore);
+
+                        Integer presentedAfter =
+                                getCurrentCount(nominalAfter) + getRejectedCount(nominalAfter);
+
+                        Integer presentedDelta = presentedAfter - presentedBefore;
+
+                        if (presentedDelta < 0) {
+                            summaryCassette.setCashoutSum(
+                                    nullToZero(summaryCassette.getCashoutSum())
+                                            + Math.abs(presentedDelta) * nominalValue
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Остаток считаем по кассетной формуле:
+     *
+     * RemainSum = InitialSum - CashoutSum + CashinSum.
+     */
+    private void recalculateRemain(List<SummaryCassette> cassets) {
+        if (cassets == null || cassets.isEmpty()) {
+            return;
+        }
+
+        for (SummaryCassette summaryCassette : cassets) {
+            if (summaryCassette == null) {
+                continue;
+            }
+
+            Integer initialSum = nullToZero(summaryCassette.getInitialSum());
+            Integer cashoutSum = nullToZero(summaryCassette.getCashoutSum());
+            Integer cashinSum = nullToZero(summaryCassette.getCashinSum());
+
+            summaryCassette.setRemainSum(initialSum - cashoutSum + cashinSum);
+        }
+    }
+
+    /**
+     * Ищем SummaryCassette по slot + nominal + currency
+     * для данных из transactions.cassettes_after.
+     */
+    private SummaryCassette findSummaryCassetteByTransactionNominal(
+            List<SummaryCassette> cassets,
+            LbEtlEncashCassetInTransactionDto cassetAfter,
+            Nominal nominal
+    ) {
+        if (cassets == null || cassets.isEmpty()) {
+            return null;
+        }
+
+        Integer transactionNominal =
+                dictionary.getOsNominalValue(nominal.getNominalId());
+
+        Integer transactionCurrencyCode =
+                dictionary.getCurrencyCode(nominal.getNominalId());
+
+        for (SummaryCassette summaryCassette : cassets) {
+            if (summaryCassette == null) {
+                continue;
+            }
+
+            if (!safeEquals(summaryCassette.getSlot(), cassetAfter.getSlot())) {
+                continue;
+            }
+
+            if (transactionNominal != null
+                    && !transactionNominal.equals(summaryCassette.getNominal())) {
+                continue;
+            }
+
+            if (transactionCurrencyCode != null
+                    && !transactionCurrencyCode.equals(summaryCassette.getCurrencyCode())) {
+                continue;
+            }
+
+            return summaryCassette;
+        }
+
+        return null;
+    }
+
+    private LbEtlEncashCassetInTransactionDto findSameCassette(
+            List<LbEtlEncashCassetInTransactionDto> cassettes,
+            LbEtlEncashCassetInTransactionDto target
+    ) {
+        if (cassettes == null || cassettes.isEmpty() || target == null) {
+            return null;
+        }
+
+        for (LbEtlEncashCassetInTransactionDto cassette : cassettes) {
+            if (cassette == null) {
+                continue;
+            }
+
+            if (safeEquals(cassette.getCassetteId(), target.getCassetteId())
+                    && safeEquals(cassette.getSlot(), target.getSlot())) {
+                return cassette;
+            }
+        }
+
+        return null;
+    }
+
+    private Nominal findNominalById(
+            List<Nominal> nominals,
+            Integer nominalId
+    ) {
+        if (nominals == null || nominals.isEmpty()) {
+            return null;
+        }
+
+        for (Nominal nominal : nominals) {
+            if (nominal == null) {
+                continue;
+            }
+
+            if (safeEquals(nominal.getNominalId(), nominalId)) {
+                return nominal;
+            }
+        }
+
+        return null;
+    }
+
+    private LbEtlEncashCassetsTransactionsJsonDto getCassetsBeforeTransData(
+            AtmEtlEncashTransactionsByIdDto transaction
+    ) {
+        return lbEncashJsonParser.parse(
+                correctTransJson(transaction.getCassettesBeforeJson()),
+                LbEtlEncashCassetsTransactionsJsonDto.class
+        );
+    }
+
+    private LbEtlEncashCassetsTransactionsJsonDto getCassetsAfterTransData(
+            AtmEtlEncashTransactionsByIdDto transaction
+    ) {
+        return lbEncashJsonParser.parse(
+                correctTransJson(transaction.getCassettesAfterJson()),
+                LbEtlEncashCassetsTransactionsJsonDto.class
+        );
+    }
+
+    private List<LbEtlEncashCassetInTransactionDto> getCassetsList(
+            LbEtlEncashCassetsTransactionsJsonDto dto
+    ) {
+        if (dto == null || dto.getCassetsTransactionsJson() == null) {
+            return new ArrayList<>();
+        }
+
+        return dto.getCassetsTransactionsJson();
+    }
+
+    private String correctTransJson(String json) {
+        if (json == null || json.trim().isEmpty() || "null".equalsIgnoreCase(json.trim())) {
+            return "{\"CassetsTransactions\":[]}";
+        }
+
+        return "{\"CassetsTransactions\":" + json + "}";
+    }
+
+    private void normalizeNominals(LbEtlEncashCassetInTransactionDto casset) {
+        if (casset.getNominals() == null) {
+            casset.setNominals(new ArrayList<>());
+        }
+    }
+
+    private boolean isAcceptedTransaction(AtmEtlEncashTransactionsByIdDto transaction) {
+        return transaction != null
+                && "Accepted".equals(transaction.getTt());
+    }
+
+    private boolean isPresentedTransaction(AtmEtlEncashTransactionsByIdDto transaction) {
+        return transaction != null
+                && "Presented".equals(transaction.getTt());
+    }
+
+    private Integer getCashInCount(Nominal nominal) {
+        if (nominal == null) {
+            return 0;
+        }
+
+        return nullToZero(nominal.getCashInCount());
+    }
+
+    private Integer getDispensedCount(Nominal nominal) {
+        if (nominal == null) {
+            return 0;
+        }
+
+        return nullToZero(nominal.getDispensedCount());
+    }
+
+    private Integer getCurrentCount(Nominal nominal) {
+        if (nominal == null) {
+            return 0;
+        }
+
+        return nullToZero(nominal.getCurrentCount());
+    }
+
+    private Integer getRejectedCount(Nominal nominal) {
+        if (nominal == null) {
+            return 0;
+        }
+
+        return nullToZero(nominal.getRejectedCount());
+    }
+
+    private boolean safeEquals(Object first, Object second) {
+        if (first == null) {
+            return second == null;
+        }
+
+        return first.equals(second);
+    }
+
+    private Integer nullToZero(Integer value) {
+        return value == null ? 0 : value;
+    }
+}
