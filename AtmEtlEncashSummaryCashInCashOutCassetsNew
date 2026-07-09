@@ -20,6 +20,10 @@ import java.util.List;
 @Log4j2
 public class AtmEtlEncashSummaryCashInCashOutCassets {
 
+    private static final String TRANSACTION_TYPE_PRESENTED = "Presented";
+    private static final String TRANSACTION_TYPE_ACCEPTED = "Accepted";
+    private static final String TRANSACTION_TYPE_CURRENCY_EXCHANGE = "currencyExchange";
+
     @Autowired
     AtmEtlEncashOsDictionary dictionary;
 
@@ -27,30 +31,24 @@ public class AtmEtlEncashSummaryCashInCashOutCassets {
     AtmEtlEncashJsonParser lbEncashJsonParser;
 
     /**
-     * Summary.Cassettes строим без HardwareCounters.
+     * Summary.Cassettes.
      *
      * InitialSum:
-     *   берем из верхней части чека через dictionary.getInitialCount(...).
+     *   из верхней части чека через dictionary.getInitialCount(...).
      *
-     * CashinSum:
-     *   считаем только как сумму положительных дельт CashInCount
-     *   внутри конкретных транзакций:
+     * CashOutSum:
+     *   НЕ меняем.
+     *   Считаем по уже рассчитанным transaction.getCasseteNominalCounter().
      *
-     *   cashInDelta = after.CashInCount - before.CashInCount
+     * CashInSum:
+     *   считаем не через max(CashInCount), а через дельту:
      *
-     * CashoutSum:
-     *   считаем только как сумму положительных дельт DispensedCount
-     *   внутри конкретных транзакций:
+     *   after.CashInCount - before.CashInCount
      *
-     *   dispensedDelta = after.DispensedCount - before.DispensedCount
+     *   по каждой конкретной транзакции.
      *
-     * RemainSum:
-     *   InitialSum - CashoutSum + CashinSum.
-     *
-     * Важно:
-     *   не используем max(CashInCount) / max(DispensedCount),
-     *   потому что это может подтянуть накопленные значения,
-     *   не связанные с текущими транзакциями.
+     * HardwareCounters:
+     *   не используем.
      */
     public List<SummaryCassette> getCassets(
             AtmEtlEncashmentsDto encashments,
@@ -65,8 +63,24 @@ public class AtmEtlEncashSummaryCashInCashOutCassets {
 
         List<SummaryCassette> cassets = getBaseCassets(cassetteCountersBeforeList);
 
-        fillCashInCashOutFromTransactionDeltas(cassets, transactions);
+        if (transactions != null && !transactions.isEmpty()) {
+            /*
+             * CashOut оставляем по старому рабочему принципу:
+             * из уже рассчитанных transaction counters.
+             */
+            fillCashOutOldWay(cassets, transactions);
 
+            /*
+             * CashIn исправляем:
+             * считаем только по дельтам CashInCount внутри транзакций.
+             */
+            fillCashInByCashInDelta(cassets, transactions);
+        }
+
+        /*
+         * После раздельного расчета CashOut и CashIn
+         * пересчитываем остаток.
+         */
         recalculateRemain(cassets);
 
         return cassets;
@@ -103,7 +117,7 @@ public class AtmEtlEncashSummaryCashInCashOutCassets {
              * В Summary.Cassettes включаем только кассеты,
              * относящиеся к кассетному балансу.
              *
-             * DepositCassette сюда не включаем.
+             * DepositCassette сюда не включается.
              * Deposit считается отдельно в AtmEtlEncashSummaryDeposit.
              */
             if (!dictionary.findRecycleOrCashout(cassetteCounters)) {
@@ -132,13 +146,105 @@ public class AtmEtlEncashSummaryCashInCashOutCassets {
     }
 
     /**
-     * Заполняем CashinSum и CashoutSum только по дельтам before/after
-     * в рамках каждой транзакции.
+     * CashOut НЕ меняем.
      *
-     * Не используем HardwareCounters.
-     * Не используем max(...) по накопительным значениям.
+     * Оставляем расчет через уже подготовленные counters:
+     *
+     * transaction.getCasseteNominalCounter()
+     *
+     * Логика:
+     *
+     * Presented:
+     *   любое ненулевое движение считаем выдачей.
+     *
+     * currencyExchange:
+     *   отрицательный currentCount считаем выдачной частью обмена.
+     *
+     * Accepted:
+     *   не участвует в CashOut.
      */
-    private void fillCashInCashOutFromTransactionDeltas(
+    private void fillCashOutOldWay(
+            List<SummaryCassette> cassets,
+            List<AtmEtlEncashTransactionsByIdDto> transactions
+    ) {
+        if (cassets == null || cassets.isEmpty()) {
+            return;
+        }
+
+        if (transactions == null || transactions.isEmpty()) {
+            return;
+        }
+
+        for (AtmEtlEncashTransactionsByIdDto transaction : transactions) {
+            if (transaction == null || transaction.getCasseteNominalCounter() == null) {
+                continue;
+            }
+
+            for (AtmEtlEncashCasseteNominalCounter counter : transaction.getCasseteNominalCounter()) {
+                if (counter == null) {
+                    continue;
+                }
+
+                Integer currentCount = nullToZero(counter.getCurrentCount());
+
+                if (currentCount == 0) {
+                    continue;
+                }
+
+                boolean isCashOutMovement = false;
+
+                /*
+                 * Старый смысл Presented:
+                 * движение по Presented — это выдача.
+                 */
+                if (TRANSACTION_TYPE_PRESENTED.equals(transaction.getTt())) {
+                    isCashOutMovement = true;
+                }
+
+                /*
+                 * Для currencyExchange сохраняем уже рабочее поведение:
+                 * отрицательный counter — выдачная часть обмена.
+                 */
+                if (TRANSACTION_TYPE_CURRENCY_EXCHANGE.equals(transaction.getTt())
+                        && currentCount < 0) {
+                    isCashOutMovement = true;
+                }
+
+                if (!isCashOutMovement) {
+                    continue;
+                }
+
+                SummaryCassette summaryCassette =
+                        findSummaryCassetteByCounter(cassets, counter);
+
+                if (summaryCassette == null) {
+                    continue;
+                }
+
+                Integer nominal = nullToZero(summaryCassette.getNominal());
+
+                if (nominal == 0) {
+                    continue;
+                }
+
+                Integer cashoutSum = Math.abs(currentCount) * nominal;
+
+                summaryCassette.setCashoutSum(
+                        nullToZero(summaryCassette.getCashoutSum()) + cashoutSum
+                );
+            }
+        }
+    }
+
+    /**
+     * CashIn считаем по дельтам CashInCount:
+     *
+     * cashInDelta = after.CashInCount - before.CashInCount
+     *
+     * Это защищает от ошибки, когда в CashInSum попадают
+     * накопленные купюры, не относящиеся к транзакциям.
+     */
+    private void fillCashInByCashInDelta(
             List<SummaryCassette> cassets,
             List<AtmEtlEncashTransactionsByIdDto> transactions
     ) {
@@ -171,7 +277,7 @@ public class AtmEtlEncashSummaryCashInCashOutCassets {
              * beforeNominals = 0
              * afterNominals  = 1
              *
-             * Это первая купюра по номиналу.
+             * Это первая принятая купюра по номиналу.
              */
             for (LbEtlEncashCassetInTransactionDto cassetAfter : cassetsAfter) {
                 if (cassetAfter == null) {
@@ -224,12 +330,9 @@ public class AtmEtlEncashSummaryCashInCashOutCassets {
                     }
 
                     /*
-                     * Прием.
+                     * Основной расчет CashIn:
                      *
-                     * CashInCount может быть накопительным,
-                     * поэтому берем только движение внутри транзакции:
-                     *
-                     * after.CashInCount - before.CashInCount.
+                     * after.CashInCount - before.CashInCount
                      */
                     Integer cashInDelta =
                             getCashInCount(nominalAfter) - getCashInCount(nominalBefore);
@@ -239,39 +342,21 @@ public class AtmEtlEncashSummaryCashInCashOutCassets {
                                 nullToZero(summaryCassette.getCashinSum())
                                         + cashInDelta * nominalValue
                         );
+
+                        continue;
                     }
 
                     /*
-                     * Выдача.
+                     * Fallback для старых/особых ОС.
                      *
-                     * DispensedCount также может быть накопительным,
-                     * поэтому берем только движение внутри транзакции:
-                     *
-                     * after.DispensedCount - before.DispensedCount.
-                     */
-                    Integer dispensedDelta =
-                            getDispensedCount(nominalAfter) - getDispensedCount(nominalBefore);
-
-                    if (dispensedDelta > 0) {
-                        summaryCassette.setCashoutSum(
-                                nullToZero(summaryCassette.getCashoutSum())
-                                        + dispensedDelta * nominalValue
-                        );
-                    }
-
-                    /*
-                     * Fallback для старых/особых ОС:
-                     *
-                     * Если CashInCount не заполнен, но по Accepted видно увеличение CurrentCount,
+                     * Если CashInCount не заполнен,
+                     * но это Accepted и видно увеличение CurrentCount,
                      * считаем это приемом.
                      *
-                     * Если DispensedCount не заполнен, но видно уменьшение
-                     * CurrentCount + RejectedCount, считаем это выдачей.
-                     *
-                     * Эти fallback-ветки срабатывают только если основные счетчики
-                     * не дали движения.
+                     * Важно:
+                     * этот fallback не трогает CashOut.
                      */
-                    if (cashInDelta <= 0 && isAcceptedTransaction(transaction)) {
+                    if (TRANSACTION_TYPE_ACCEPTED.equals(transaction.getTt())) {
                         Integer currentDelta =
                                 getCurrentCount(nominalAfter) - getCurrentCount(nominalBefore);
 
@@ -282,32 +367,16 @@ public class AtmEtlEncashSummaryCashInCashOutCassets {
                             );
                         }
                     }
-
-                    if (dispensedDelta <= 0 && isPresentedTransaction(transaction)) {
-                        Integer presentedBefore =
-                                getCurrentCount(nominalBefore) + getRejectedCount(nominalBefore);
-
-                        Integer presentedAfter =
-                                getCurrentCount(nominalAfter) + getRejectedCount(nominalAfter);
-
-                        Integer presentedDelta = presentedAfter - presentedBefore;
-
-                        if (presentedDelta < 0) {
-                            summaryCassette.setCashoutSum(
-                                    nullToZero(summaryCassette.getCashoutSum())
-                                            + Math.abs(presentedDelta) * nominalValue
-                            );
-                        }
-                    }
                 }
             }
         }
     }
 
     /**
-     * Остаток считаем по кассетной формуле:
+     * После раздельного расчета CashOut и CashIn
+     * пересчитываем остаток:
      *
-     * RemainSum = InitialSum - CashoutSum + CashinSum.
+     * RemainSum = InitialSum - CashoutSum + CashinSum
      */
     private void recalculateRemain(List<SummaryCassette> cassets) {
         if (cassets == null || cassets.isEmpty()) {
@@ -328,8 +397,11 @@ public class AtmEtlEncashSummaryCashInCashOutCassets {
     }
 
     /**
-     * Ищем SummaryCassette по slot + nominal + currency
-     * для данных из transactions.cassettes_after.
+     * Ищем SummaryCassette по данным Nominal из cassettes_after:
+     *
+     * - Slot;
+     * - Nominal;
+     * - CurrencyCode.
      */
     private SummaryCassette findSummaryCassetteByTransactionNominal(
             List<SummaryCassette> cassets,
@@ -362,6 +434,52 @@ public class AtmEtlEncashSummaryCashInCashOutCassets {
 
             if (transactionCurrencyCode != null
                     && !transactionCurrencyCode.equals(summaryCassette.getCurrencyCode())) {
+                continue;
+            }
+
+            return summaryCassette;
+        }
+
+        return null;
+    }
+
+    /**
+     * Ищем SummaryCassette по уже рассчитанному counter:
+     *
+     * - Slot;
+     * - Nominal;
+     * - CurrencyCode.
+     */
+    private SummaryCassette findSummaryCassetteByCounter(
+            List<SummaryCassette> cassets,
+            AtmEtlEncashCasseteNominalCounter counter
+    ) {
+        if (cassets == null || cassets.isEmpty() || counter == null) {
+            return null;
+        }
+
+        Integer counterNominal =
+                dictionary.getOsNominalValue(counter.getNominalId());
+
+        Integer counterCurrencyCode =
+                dictionary.getCurrencyCode(counter.getNominalId());
+
+        for (SummaryCassette summaryCassette : cassets) {
+            if (summaryCassette == null) {
+                continue;
+            }
+
+            if (!safeEquals(summaryCassette.getSlot(), counter.getSlot())) {
+                continue;
+            }
+
+            if (counterNominal != null
+                    && !counterNominal.equals(summaryCassette.getNominal())) {
+                continue;
+            }
+
+            if (counterCurrencyCode != null
+                    && !counterCurrencyCode.equals(summaryCassette.getCurrencyCode())) {
                 continue;
             }
 
@@ -456,16 +574,6 @@ public class AtmEtlEncashSummaryCashInCashOutCassets {
         }
     }
 
-    private boolean isAcceptedTransaction(AtmEtlEncashTransactionsByIdDto transaction) {
-        return transaction != null
-                && "Accepted".equals(transaction.getTt());
-    }
-
-    private boolean isPresentedTransaction(AtmEtlEncashTransactionsByIdDto transaction) {
-        return transaction != null
-                && "Presented".equals(transaction.getTt());
-    }
-
     private Integer getCashInCount(Nominal nominal) {
         if (nominal == null) {
             return 0;
@@ -474,28 +582,12 @@ public class AtmEtlEncashSummaryCashInCashOutCassets {
         return nullToZero(nominal.getCashInCount());
     }
 
-    private Integer getDispensedCount(Nominal nominal) {
-        if (nominal == null) {
-            return 0;
-        }
-
-        return nullToZero(nominal.getDispensedCount());
-    }
-
     private Integer getCurrentCount(Nominal nominal) {
         if (nominal == null) {
             return 0;
         }
 
         return nullToZero(nominal.getCurrentCount());
-    }
-
-    private Integer getRejectedCount(Nominal nominal) {
-        if (nominal == null) {
-            return 0;
-        }
-
-        return nullToZero(nominal.getRejectedCount());
     }
 
     private boolean safeEquals(Object first, Object second) {
